@@ -1,0 +1,13 @@
+name: taylor  # environment name
+channels:
+  - defaults
+  - pytorch
+dependencies:
+  - python=3.8  # recommendet python version
+  - pytorch=2.2.2
+  - torchvision
+  - torchaudio
+  - matplotlib
+  - pandas
+  - numpy
+  - pip
