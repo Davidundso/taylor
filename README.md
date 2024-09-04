@@ -1,5 +1,5 @@
 # taylor
-This repository will be used for my bachelor thesis: Aiming to improve on line search methods in ML.
+This repository will be used for my bachelor thesis: Aiming to improve line search methods in ML.
 
 **usage**    
 Clone the repository and follow the instructions:  
