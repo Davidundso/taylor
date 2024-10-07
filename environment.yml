@@ -10,4 +10,5 @@ dependencies:
   - matplotlib
   - pandas
   - numpy
-  - pip
+  - pip:
+    - curvlinops-for-pytorch
