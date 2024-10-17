@@ -62,24 +62,7 @@ to apply them (Gascon et al., 2017; McBratney et al., 2003).
 Looking at the properties and functions of soils, for example carbon
 and water storage and plant nutrition, the soil type as a highly integrated
 prediction variable has the advantage that we can infer mechanical
-properties, dynamic processes and general characteristics from it with
-little effort (Albrecht et al., 2005; Hartemink and Bockheim, 2013). For
-example, Zhou et al. (2004) showed new spatial patterns in the predicted
-soil type map with their Bayesian predictive modelling approach.
-Grinand et al. (2008) uses classification tree analysis, which also supports
-decision-making in soil map extrapolation using machine learning
-methods. Adhikari et al. (2014) compared an existing soil map from a
-field survey with a predicted map calculated using a decision tree model.
-Artificial neural networks (ANNs) are currently one of the most popular
-machine learning methods (Taghizadeh-Mehrjardi et al., 2020, 2021a),
-as they are able to process large amounts of data and compute predictions
-comparably fast (Haykin, 1998; Schmidhuber, 2015; Silveira
-et al., 2013). Brungard et al. (2015) predicted soil taxonomy classes
-using eleven different models and found that the complex models containing
-neural networks were more accurate. Furthermore, Zhu (2000)
-found that ANNs can be used to obtain high-resolution soil maps.
-Although Heung et al. (2016) has also achieved good results with ANNs,
-they also have to admit that ANNs are difficult to interpret. Despite the
+
 results being rich in information, a major drawback of the predicted soil
 maps, and especially of the survey maps, is that they do not quantify the
 uncertainty of the individual soil types at a given geographical location
@@ -120,7 +103,13 @@ Further, we will discuss the transferability of the ANN to adjacent
 similar areas. Overall, our analyses will help to better understand and
 interpret results from ML models in soil science to provide new insights
 into soil processes and the spatial structure of the different domains.
-2. Material and methods
+
+
+\begin{figure}[h!]  % h! bedeutet, dass die Grafik an dieser Stelle erscheinen soll
+    \centering      % zentriert die Grafik
+    \includegraphics[width=1\textwidth]{/Users/davidsuckrow/Desktop/plot.pdf}  % Pfad zur Grafik
+    \label{fig:example}  % Label für Referenzierung im Text
+\end{figure}
 2.1
 Science of the Total Environment 944 (2024) 173720
 3
@@ -174,6 +163,15 @@ capture the influence of geology, we add a geological map with the scale
 of 1:50,000, provided by the LGRB and rasterized in the same way as the
 soil type map. We provide an overview of all the covariates used for the
 ANN and the corresponding references in Table 2.
+
+
+\begin{figure}[h!]  % h! bedeutet, dass die Grafik an dieser Stelle erscheinen soll
+    \centering      % zentriert die Grafik
+    \includegraphics[width=.9\textwidth]{/Users/davidsuckrow/Desktop/plot.pdf}  % Pfad zur Grafik
+    \label{fig:example}  % Label für Referenzierung im Text
+\end{figure}
+
+
 2.3. Model architecture
 The origin of Artificial Neural Networks (ANNs) lies in the field of
 image recognition, especially in the area of classification (Goodfellow
@@ -188,6 +186,13 @@ allowing the ANN to learn complex patterns. The input layer receives the
 input data and consists of one neuron per input feature, in our case, one
 neuron per covariate. The neurons in the hidden layers pass the
 weighted sum of the outputs from the previous layer to their activation
+
+\begin{figure}[h!]  % h! bedeutet, dass die Grafik an dieser Stelle erscheinen soll
+    \centering      % zentriert die Grafik
+    \includegraphics[scale = 1]{/Users/davidsuckrow/Desktop/plot.pdf}  % Pfad zur Grafik
+    \label{fig:example}  % Label für Referenzierung im Text
+\end{figure}
+
 function. The final layer outputs the prediction and consists of one
 neuron per output variable, in our case, one neuron per soil type. During
 training the weights of the connections between the layers are learned
@@ -202,8 +207,5 @@ was very important to us. We choose a fully connected multilayer perceptron
 as described in Table 3. As the activation function for the hidden
 layer, the rectified linear unit function was chosen, first used by Hahnloser
 et al. (2000) and defined as 
-\begin{figure}[h!]  % h! bedeutet, dass die Grafik an dieser Stelle erscheinen soll
-    \centering      % zentriert die Grafik
-    \includegraphics[width=1\textwidth]{/Users/davidsuckrow/Desktop/538d00d9-73f2-4ca1-ba2c-376cb6e2f4e3}  % Pfad zur Grafik
-    \label{fig:example}  % Label für Referenzierung im Text
-\end{figure}
+
+
