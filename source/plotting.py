@@ -5,7 +5,7 @@ import tueplots.fontsizes as fontsizes
 
 
 
-def get_style(font_adjustment=0, rel_width=1):
+def get_style(font_adjustment=1, rel_width=1):
     # Retrieve the original style from jmlr2001
     jmlr_style = bundles.jmlr2001(rel_width=rel_width)
 
