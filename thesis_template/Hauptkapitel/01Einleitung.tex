@@ -164,11 +164,14 @@ of 1:50,000, provided by the LGRB and rasterized in the same way as the
 soil type map. We provide an overview of all the covariates used for the
 ANN and the corresponding references in Table 2.
 
-
-\begin{figure}[h!]  % h! bedeutet, dass die Grafik an dieser Stelle erscheinen soll
-    \centering      % zentriert die Grafik
-    \includegraphics[width=.9\textwidth]{/Users/davidsuckrow/Desktop/plot.pdf}  % Pfad zur Grafik
-    \label{fig:example}  % Label für Referenzierung im Text
+\begin{figure}[h]
+    \centering
+    \caption{Loss in the first three epochs of training}  % Kurztitel über der Grafik
+    \includegraphics[scale=1]{/Users/davidsuckrow/Documents/Developing/bachelor_thesis/experiments/exp_05_curvelinops/plot.pdf}  % Grafik selbst
+    \captionsetup{justification=justified}  % Change justification for the next caption
+    \hfill \caption*{In this figure, we observe the behavior of the model during the initial phase of training, showing how the loss decreases with each epoch. The x-axis represents the epoch number, and the y-axis represents the loss value.}  % Beschreibung unter der Grafik
+    \captionsetup{justification=centering}
+    \label{fig:example}
 \end{figure}
 
 
@@ -187,11 +190,18 @@ input data and consists of one neuron per input feature, in our case, one
 neuron per covariate. The neurons in the hidden layers pass the
 weighted sum of the outputs from the previous layer to their activation
 
-\begin{figure}[h!]  % h! bedeutet, dass die Grafik an dieser Stelle erscheinen soll
-    \centering      % zentriert die Grafik
-    \includegraphics[scale = 1]{/Users/davidsuckrow/Desktop/plot.pdf}  % Pfad zur Grafik
-    \label{fig:example}  % Label für Referenzierung im Text
+\begin{figure}[h]
+    \centering
+    \caption{Loss in the first three epochs of training}  % Kurztitel über der Grafik
+    \includegraphics[scale=1]{/Users/davidsuckrow/Documents/Developing/bachelor_thesis/experiments/exp_05_curvelinops/plot2.pdf}  % Grafik selbst
+    \captionsetup{justification=justified}  % Change justification for the next caption
+    \hfill \caption*{In this figure, we observe the behavior of the model during the initial phase of training, showing how the loss decreases with each epoch. The x-axis represents the epoch number, and the y-axis represents the loss value.}  % Beschreibung unter der Grafik
+    \captionsetup{justification=centering}
+    \label{fig:example}
 \end{figure}
+
+
+
 
 function. The final layer outputs the prediction and consists of one
 neuron per output variable, in our case, one neuron per soil type. During

@@ -23,7 +23,7 @@
 
 % Dokumentenklasse %
 \documentclass[
-ngerman,        
+english,        
 toc=flat,
 toc=chapterentrywithdots,
 captions=tableabove,
@@ -82,9 +82,11 @@ numbers=noenddot: Entfernt den Punkt am Ende von Kapitel- und Abschnittsnummern 
 
 
 % Caption %
-\usepackage[labelfont={bf,sf},font={bf}, labelsep=space, singlelinecheck=off]{caption} 
+% \usepackage[labelfont={bf,sf},font={bf}, labelsep=space, singlelinecheck=off]{caption} 
+\usepackage[labelfont={bf, rm},font={normal},labelsep=space,singlelinecheck=off]{caption}
+
 \captionsetup[figure]{justification=centering} % Bildunterschriften (figure) zentriert dargestellt
-\captionsetup[table]{justification=raggedright} % tabellenunterschr linksbündig
+\captionsetup[table]{justification=raggedright} 
 
 \begin{comment}
 labelfont={bf,sf}: Das Label (also der Teil der Beschriftung, der "Abbildung" oder "Tabelle" anzeigt) wird fett (bf = boldface) und serifenlos (sf = sans-serif) dargestellt.
@@ -117,6 +119,7 @@ singlelinecheck=off: Diese Option verhindert, dass die Caption automatisch zentr
 
 % Vorbereitung der Verzeichnisse %
 \usepackage[nohyperlinks,printonlyused]{acronym}  % abkürzungen haben keinen Link, nur Abk zeigen die benutzt werden
+
 
 \begin{comment}
 colorlinks=true: Aktiviert die farbige Darstellung von Links im Dokument. Anstelle von standardmäßigen umrandeten Boxen werden die Links in verschiedenen Farben angezeigt.
@@ -262,3 +265,5 @@ font=\Huge\bfseries\rmfamily % \rmfamily stellt sicher, dass eine Serifenschrift
 \input{Anhang} %Entfernen/Auskommentieren um Anhang zu deaktivieren
 
 \end{document}
+
+% \the\columnwidth gibt breite aus
