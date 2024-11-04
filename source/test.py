@@ -4,7 +4,7 @@ from torch.optim import SGD
 from adaptive_optimizer import AdaptiveLROptimizer
 
 
-def test_adaptive_lr_optimizer():
+def test_adaptive_lr_optimizer(print_specifics=False):
     # Step 1: Define a simple 1D model
     theta_0 = torch.randn(1)
     theta_old = theta_0.clone()
@@ -26,18 +26,23 @@ def test_adaptive_lr_optimizer():
     sgd_optimizer = SGD(model.parameters(), lr=.012)  # Dummy optimizer
     adaptive_optimizer = AdaptiveLROptimizer(model, loss_function, sgd_optimizer)
 
-    # Step 4: 
+    # Step 4: set random target and input values
     target = 5 * torch.randn(1) 
     x = 10 * torch.randn(1)  # Input (doesn't matter in 1D)
-    print("theta before optimizer:", model.param.item())
-    # Step 5: Use the AdaptiveLROptimizer to compute alpha_star and direction
+
+    
+    if print_specifics:
+        print("theta before optimizer:", model.param.item())
+        # Step 5: Use the AdaptiveLROptimizer to compute alpha_star and direction
     alpha_star, direction = adaptive_optimizer.compute_alpha_star(x, target)
-    print(" theta_0 =", model.param.item())
-    print("input x =", x.item())
-    print("target =", target.item())
-    print(f"Computed alpha_star: {alpha_star.item()}")
-    print(f"Direction: {direction.item()}")
-    print("theta_1 = theta_0 + d * alpha_star =", theta_old.item() + direction.item() * alpha_star.item())
+
+    if print_specifics:
+        print(" theta_0 =", model.param.item())
+        print("input x =", x.item())
+        print("target =", target.item())
+        print(f"Computed alpha_star: {alpha_star.item()}")
+        print(f"Direction: {direction.item()}")
+        print("theta_1 = theta_0 + d * alpha_star =", theta_old.item() + direction.item() * alpha_star.item())
 
 
     # Step 6: Apply the step using AdaptiveLROptimizer
@@ -45,8 +50,10 @@ def test_adaptive_lr_optimizer():
     
     # Step 7: 
     theta_target = theta_old.item() + direction.item()* alpha_star.item()
-    print(f"Updated parameter value: {model.param.item()}")
-    print(f"Target value theta1: {theta_target}")
+
+    if print_specifics:
+        print(f"Updated parameter value: {model.param.item()}")
+        print(f"Target value theta1: {theta_target}")
 
     assert torch.isclose(model.param, torch.tensor(theta_target) , atol=1e-6), "The parameter did not step to the right value!"
     print("Test passed: Parameter stepped to: ", model.param.item(), " Analytically it should be:", theta_target)
@@ -58,6 +65,5 @@ def test_adaptive_lr_optimizer():
     assert torch.isclose(loss_function(model(x), target), torch.tensor(0, dtype=torch.float32), atol=1e-6), "The loss is not very close to 0"
     print("Test passed: Loss is :", loss_function(model(x), target).item())
 
-# Run the test
-test_adaptive_lr_optimizer()
+
 
