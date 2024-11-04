@@ -152,7 +152,11 @@ which is based on Jenny (1983). To cover most of the covariates presented
 in the SCORPAN model, we also included satellite data. Copernicus
 provides the Sentinel-2 data, available from 2017 in 13 spectral
 bands with a 5-day repetition frequency. For us, the most important
-variables are the visible (R, G, B) and near-infrared bands, which have a
+variables are the visible (R, G, B) and near-infrared which is based on Jenny (1983). To cover most of the covariates presented
+in the SCORPAN model, we also included satellite data. Copernicus
+provides the Sentinel-2 data, available from 2017 in 13 spectral
+bands with a 5-day repetition frequency. For us, the most important
+variables are the visible (R, G, B) and near-infraredbands, which have a
 resolution of 10 m. We use these spectral bands to calculate important
 indices such as the Normalized Difference Vegetation Index (Fig. 2B(d))
 to describe vegetation cover. Finally, we calculate the median value for
@@ -166,11 +170,14 @@ ANN and the corresponding references in Table 2.
 
 \begin{figure}[h]
     \centering
-    \caption{Loss in the first three epochs of training}  % Kurztitel über der Grafik
-    \includegraphics[scale=1]{/Users/davidsuckrow/Documents/Developing/bachelor_thesis/experiments/exp_05_curvelinops/plot.pdf}  % Grafik selbst
+    \textbf{Teet title}\\
+    \captionsetup{justification=justified}
+    \includegraphics[scale=1]{/Users/davidsuckrow/Desktop/alpha.pdf}  % Grafik selbst
+    \caption[test]{Loss in the first three epochs of training.In this figure, we observe 
+    the behavior of the model during the initial phase of training, showing how the loss decreases with each epoch. The x-axis represents the epoch number, and the y-axis represents the loss value. }  % Kurztitel über der Grafik
     \captionsetup{justification=justified}  % Change justification for the next caption
-    \hfill \caption*{In this figure, we observe the behavior of the model during the initial phase of training, showing how the loss decreases with each epoch. The x-axis represents the epoch number, and the y-axis represents the loss value.}  % Beschreibung unter der Grafik
-    \captionsetup{justification=centering}
+    %\hfill \caption*{In this figure, we observe the behavior of the model during the initial phase of training, showing how the loss decreases with each epoch. The x-axis represents the epoch number, and the y-axis represents the loss value.}  % Beschreibung unter der Grafik
+    %\captionsetup{justification=centering}
     \label{fig:example}
 \end{figure}
 
