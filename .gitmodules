@@ -1,0 +1,3 @@
+[submodule "algorithmic_efficiency"]
+	path = algorithmic_efficiency
+	url = https://github.com/mlcommons/algorithmic-efficiency.git
