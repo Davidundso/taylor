@@ -1,0 +1,19 @@
+# PyTorch core library for tensors and model building
+import torch
+
+# PyTorch's neural network module and functions for defining models and layers
+import torch.nn as nn
+
+# Utilities to convert model parameters to a single vector and vice versa
+from torch.nn.utils import parameters_to_vector, vector_to_parameters
+# Note: `vector_to_parameters` is not the exact inverse of `parameters_to_vector`
+
+# Optimizers for training
+from torch.optim import SGD
+import torch.optim as optim
+
+# Custom linear operator from curvlinops package,used for efficient matrix-vector products
+from curvlinops import GGNLinearOperator
+
+# Custom adaptive learning rate optimizer
+from adaptive_optimizer import AdaptiveLROptimizer
