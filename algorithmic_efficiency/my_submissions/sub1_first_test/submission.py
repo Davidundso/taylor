@@ -14,7 +14,7 @@ import torch.nn as nn
 from torch.optim import SGD
 from adaptive_optimizer import AdaptiveLROptimizer
 import torch.optim as optim
-
+ 
 
 def init_optimizer_state(workload: spec.Workload,
                          model_params: spec.ParameterContainer,
@@ -58,7 +58,7 @@ def update_params(workload: spec.Workload,
      new_model_state
     """
     # Initialize AdaptiveLROptimizer
-    model = workload.model  # or adapt as needed to access model
+    model = current_param_container
     loss_function = workload.loss_function
     optimizer = workload.optimizer  # Assuming it’s Adam
 
@@ -84,20 +84,31 @@ def update_params(workload: spec.Workload,
 
 
 def get_batch_size(workload_name):
-  """
-    Gets batch size for workload. 
-    Note that these batch sizes only apply during training and not during evals.
-    Args: 
-      workload_name (str): Valid workload_name values are: "wmt", "ogbg", 
-        "criteo1tb", "fastmri", "imagenet_resnet", "imagenet_vit", 
-        "librispeech_deepspeech", "librispeech_conformer" or any of the
-        variants.
-    Returns:
-      int: batch_size 
-    Raises:
-      ValueError: If workload_name is not handled.
-    """
-  pass
+  # Return the global batch size.
+  if workload_name == 'criteo1tb':
+    return 262_144
+  elif workload_name == 'fastmri':
+    return 32
+  elif workload_name == 'imagenet_resnet':
+    return 1024
+  elif workload_name == 'imagenet_resnet_silu':
+    return 512
+  elif workload_name == 'imagenet_resnet_gelu':
+    return 512
+  elif workload_name == 'imagenet_vit':
+    return 1024
+  elif workload_name == 'librispeech_conformer':
+    return 256
+  elif workload_name == 'librispeech_deepspeech':
+    return 256
+  elif workload_name == 'ogbg':
+    return 512
+  elif workload_name == 'wmt':
+    return 128
+  elif workload_name == 'mnist':
+    return 16
+  else:
+    raise ValueError(f'Unsupported workload name: {workload_name}.')
 
 
 def data_selection(workload: spec.Workload,
