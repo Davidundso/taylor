@@ -40,6 +40,9 @@ def init_optimizer_state(workload: spec.Workload,
     return optimizer_state
 
 
+import torch
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingLR
+
 def update_params(workload: spec.Workload,
                   current_param_container: spec.ParameterContainer,
                   current_params_types: spec.ParameterTypeTree,
@@ -64,6 +67,36 @@ def update_params(workload: spec.Workload,
 
     adaptive_optimizer = AdaptiveLROptimizer(model, loss_function, optimizer)
 
+    # Get the step_hint value from workload
+    step_hint = workload.step_hint()
+
+    # Adjust hyperparameters based on step_hint
+    warmup_steps = hyperparameters.get("warmup_factor", 0.05) * step_hint
+    total_steps = step_hint  # Use step_hint as the total number of steps
+
+    # Get initial learning rate and minimum learning rate
+    initial_lr = hyperparameters.get("initial_lr", 0.001)
+    min_lr = hyperparameters.get("min_lr", 1e-6)
+
+    # Step 1: Define warmup scheduler (Linear warmup)
+    def warmup_lr_lambda(step: int):
+        if step < warmup_steps:
+            return float(step) / float(max(1, warmup_steps))
+        return 1.0
+
+    # Step 2: Define cosine decay scheduler after warmup
+    cosine_steps = max(total_steps - warmup_steps, 1)  # Ensure there's at least one decay step
+    cosine_lr_scheduler = CosineAnnealingLR(optimizer, T_max=cosine_steps, eta_min=min_lr)
+
+    # Combine warmup and cosine decay
+    lr_scheduler = LambdaLR(optimizer, lr_lambda=warmup_lr_lambda)
+    
+    # Apply the combined learning rate schedule
+    if global_step < warmup_steps:
+        lr_scheduler.step()
+    else:
+        cosine_lr_scheduler.step()
+
     # Extract data and target from batch
     data = batch["data"]
     target = batch["target"]
@@ -79,7 +112,11 @@ def update_params(workload: spec.Workload,
     updated_variables = {name: param.detach().clone() for name, param in model.named_parameters()}
     updated_model_state = model.state_dict()
 
+    # Update the optimizer state to include the new scheduler
+    optimizer_state['scheduler'] = lr_scheduler if global_step < warmup_steps else cosine_lr_scheduler
+
     return updated_optimizer_state, updated_variables, updated_model_state
+
   
 
 
