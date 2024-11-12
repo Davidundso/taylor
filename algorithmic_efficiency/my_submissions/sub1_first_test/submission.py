@@ -14,7 +14,7 @@ import torch.nn as nn
 from torch.optim import SGD
 from adaptive_optimizer import AdaptiveLROptimizer
 import torch.optim as optim
- 
+
 
 def init_optimizer_state(workload: spec.Workload,
                          model_params: spec.ParameterContainer,
@@ -27,11 +27,11 @@ def init_optimizer_state(workload: spec.Workload,
      optimizer_update_fn (not in all submissions, so I will skip that)
     """
     # Get learning rate and momentum from hyperparameters
-    lr = hyperparameters.get("learning_rate", 0.01)  # Default to 0.01 if not provided
-    momentum = hyperparameters.get("momentum", 0.9)  # Default to 0.9 if not provided
+    lr = hyperparameters.get("learning_rate", 0.001)  # Default to 0.01 if not provided
+    weight_decay = 1e-4
     
     # Initialize Nesterov optimizer
-    optimizer = optim.SGD(model_params, lr=lr, momentum=momentum, nesterov=True)
+    optimizer = optim.AdamW(model_params, lr=lr, weight_decay=weight_decay)
 
     
 
