@@ -33,6 +33,7 @@ python3 submission_runner.py \
     --framework=pytorch \
     --workload=fastmri \
     --workload_path=/mnt/lustre/datasets/mlcommons/fastmri \
+    --tuning_ruleset=self \
     --experiment_dir=$WORK/cluster_experiments/cluster_exp01 \
     --experiment_name=cluster_exp01 \
     --submission_path=my_submissions/sub2/sub2_baseline_alpha.py
