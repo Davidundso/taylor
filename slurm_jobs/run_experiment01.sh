@@ -32,7 +32,7 @@ conda activate $WORK/.conda/algo2
 python3 submission_runner.py \
     --framework=pytorch \
     --workload=fastmri \
-    --workload_path=/mnt/lustre/datasets/mlcommons/fastmri \
+    --data_dir=/mnt/lustre/datasets/mlcommons/fastmri \
     --tuning_ruleset=self \
     --experiment_dir=$WORK/cluster_experiments/cluster_exp01 \
     --experiment_name=cluster_exp01 \
