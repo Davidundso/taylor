@@ -1,0 +1,4 @@
+absl-py
+torch
+algorithmic-efficiency
+curvlinops
