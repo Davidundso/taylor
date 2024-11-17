@@ -370,12 +370,11 @@ def train_once(
 
     train_state['accumulated_submission_time'] += (
         train_step_end_time - train_state['last_step_end_time'])
-    # Use 3x the runtime budget for the self-tuning ruleset.
-    max_allowed_runtime_sec = (
-        workload.max_allowed_runtime_sec if FLAGS.tuning_ruleset == 'external'
-        else 3 * workload.max_allowed_runtime_sec)
+    # Use a fixed runtime budget for quick testing. EDITED 3 lines below.
+    max_allowed_runtime_sec = 300  # Set to 5 minutes for quick testing
     train_state['is_time_remaining'] = (
-        train_state['accumulated_submission_time'] < max_allowed_runtime_sec)
+      train_state['accumulated_submission_time'] < max_allowed_runtime_sec)
+
     # Check if submission is eligible for an untimed eval.
     if ((train_step_end_time - train_state['last_eval_time']) >=
         workload.eval_period_time_sec or train_state['training_complete']):
