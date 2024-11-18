@@ -1,4 +1,8 @@
 """Submission file for an NAdamW optimizer with warmup+cosine LR in PyTorch."""
+# to fix import error
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
 
 import math
 from typing import Dict, Iterator, List, Tuple
@@ -214,24 +218,23 @@ def init_optimizer_state(workload: spec.Workload,
   hyperparameters = HPARAMS
 
   optimizer_state = {
-      'optimizer':
-          NAdamW(
-              model_params.parameters(),
-              lr=hyperparameters.learning_rate,
-              betas=(1.0 - hyperparameters.one_minus_beta1,
-                     hyperparameters.beta2),
-              eps=1e-8,
-              weight_decay=hyperparameters.weight_decay),
-  }
+    'optimizer': NAdamW(
+        model_params.parameters(),
+        lr=hyperparameters['learning_rate'],
+        betas=(1.0 - hyperparameters['one_minus_beta1'],
+               hyperparameters['beta2']),
+        eps=1e-8,
+        weight_decay=hyperparameters['weight_decay']),
+}
 
   def pytorch_cosine_warmup(step_hint: int, hyperparameters, optimizer):
-    warmup_steps = int(hyperparameters.warmup_factor * step_hint)
-    warmup = LinearLR(
-        optimizer, start_factor=1e-10, end_factor=1., total_iters=warmup_steps)
-    cosine_steps = max(step_hint - warmup_steps, 1)
-    cosine_decay = CosineAnnealingLR(optimizer, T_max=cosine_steps)
-    return SequentialLR(
-        optimizer, schedulers=[warmup, cosine_decay], milestones=[warmup_steps])
+      warmup_steps = int(hyperparameters['warmup_factor'] * step_hint)
+      warmup = LinearLR(
+          optimizer, start_factor=1e-10, end_factor=1., total_iters=warmup_steps)
+      cosine_steps = max(step_hint - warmup_steps, 1)
+      cosine_decay = CosineAnnealingLR(optimizer, T_max=cosine_steps)
+      return SequentialLR(
+          optimizer, schedulers=[warmup, cosine_decay], milestones=[warmup_steps])
 
   optimizer_state['scheduler'] = pytorch_cosine_warmup(
       workload.step_hint, hyperparameters, optimizer_state['optimizer'])
@@ -258,8 +261,10 @@ def update_params(workload: spec.Workload,
   del hyperparameters
 
   hyperparameters = HPARAMS
-  params = current_param_container.parameters()
-  theta_0 = parameters_to_vector(params)
+
+  params_list = list(current_param_container.parameters())
+
+  theta_0 = parameters_to_vector(params_list)
     
   current_model = current_param_container
   current_model.train()
@@ -267,8 +272,25 @@ def update_params(workload: spec.Workload,
 
   loss_fn = workload.loss_fn
   
-  Data = [(batch['data'], batch['target'])]
-  GGN = GGNLinearOperator(current_model, loss_fn, params, Data)
+  print("Batch keys:", batch.keys())
+
+  if isinstance(hyperparameters, dict):
+      print("Hyperparameters keys:", hyperparameters.keys())
+  else:
+      print("Hyperparameters is not a dictionary")
+
+  if isinstance(optimizer_state, dict):
+      print("Optimizer state keys:", optimizer_state.keys())
+  else:
+      print("Optimizer state is not a dictionary")
+
+  if isinstance(model_state, dict):
+      print("Model state keys:", model_state.keys())
+  else:
+      print("Model state is not a dictionary")
+  
+  Data = [(batch['inputs'], batch['targets'])]
+  GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
 
   logits_batch, new_model_state = workload.model_fn(
       params=current_model,
@@ -309,7 +331,7 @@ def update_params(workload: spec.Workload,
   optimizer_state['optimizer'].step()
   optimizer_state['scheduler'].step()
   
-  d_unnormalized = parameters_to_vector(params) - theta_0
+  d_unnormalized = parameters_to_vector(params_list) - theta_0
 
   GGNd = GGN @ d_unnormalized.detach().numpy()
 
