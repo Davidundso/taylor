@@ -14,12 +14,14 @@ import torch.distributed.nn as dist_nn
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.optim.lr_scheduler import LinearLR
 from torch.optim.lr_scheduler import SequentialLR
+import torch.nn as nn
 
 from algorithmic_efficiency import spec
 from algorithmic_efficiency.pytorch_utils import pytorch_setup
 from source.adaptive_optimizer import AdaptiveLROptimizer
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from curvlinops import GGNLinearOperator
+
 
 USE_PYTORCH_DDP = pytorch_setup()[0]
 
@@ -260,37 +262,59 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
+  
+
   hyperparameters = HPARAMS
 
-  params_list = list(current_param_container.parameters())
-
-  theta_0 = parameters_to_vector(params_list)
-    
   current_model = current_param_container
+
+  params_list = [param for param in current_model.parameters() if param.requires_grad]
+
+  theta_0 = parameters_to_vector([param.detach().clone() for param in params_list])  
+  p = 500
+  if global_step % p == 0:
+    print("first 10 elements of theta_0: ", theta_0[:10])  # debugging
+
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
 
-  loss_fn = workload.loss_fn
-  
-  print("Batch keys:", batch.keys())
+  # create torch loss function from workload loss type for GGN computation
+  def get_loss_function(loss_type):
+      """
+      Maps a loss type to a PyTorch loss function.
 
-  if isinstance(hyperparameters, dict):
-      print("Hyperparameters keys:", hyperparameters.keys())
-  else:
-      print("Hyperparameters is not a dictionary")
+      Args:
+          loss_type (LossType): The loss type Enum.
 
-  if isinstance(optimizer_state, dict):
-      print("Optimizer state keys:", optimizer_state.keys())
-  else:
-      print("Optimizer state is not a dictionary")
+      Returns:
+          A PyTorch loss function (instance of nn.Module).
+      """
+      loss_mapping = {
+          "SOFTMAX_CROSS_ENTROPY": nn.CrossEntropyLoss(),
+          "SIGMOID_CROSS_ENTROPY": nn.BCEWithLogitsLoss(),
+          "MEAN_SQUARED_ERROR": nn.MSELoss(),
+          "CTC_LOSS": nn.CTCLoss(),  # Requires alignment inputs
+          "MEAN_ABSOLUTE_ERROR": nn.L1Loss(),
+      }
 
-  if isinstance(model_state, dict):
-      print("Model state keys:", model_state.keys())
-  else:
-      print("Model state is not a dictionary")
-  
+      # Convert Enum to string (e.g., "LossType.SOFTMAX_CROSS_ENTROPY" -> "SOFTMAX_CROSS_ENTROPY")
+      loss_type_str = loss_type.name if hasattr(loss_type, 'name') else str(loss_type)
+
+      if loss_type_str not in loss_mapping:
+          raise ValueError(f"Unsupported loss type: {loss_type_str}")
+
+      return loss_mapping[loss_type_str]
+
+
+  loss_fn = get_loss_function(workload.loss_type)
+  # data structure expected by GGNLinearOperator
   Data = [(batch['inputs'], batch['targets'])]
+  
+
   GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
+  if global_step % p == 0:
+    print("Done with GGN")  # debugging
+
 
   logits_batch, new_model_state = workload.model_fn(
       params=current_model,
@@ -323,7 +347,9 @@ def update_params(workload: spec.Workload,
 
   loss.backward()
   
-  gradients = parameters_to_vector(param.grad for param in params if param.grad is not None)
+  gradients = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None)
+  if global_step % p == 0:
+    print("Done with gradients")  # debugging
 
   if grad_clip is not None:
     torch.nn.utils.clip_grad_norm_(
@@ -331,21 +357,47 @@ def update_params(workload: spec.Workload,
   optimizer_state['optimizer'].step()
   optimizer_state['scheduler'].step()
   
-  d_unnormalized = parameters_to_vector(params_list) - theta_0
+  theta_1 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad])  
+  if global_step % p == 0:
+    print("first 10 elements of theta_1: ", theta_1[:10])  # debugging  
+  d_unnormalized = theta_1 - theta_0
+  if global_step % p == 0:
+    print("Done with d_unnormalized")  # debugging
+    print("first 10 elements of d_unnormalized: ", d_unnormalized[:10])  # debugging
 
-  GGNd = GGN @ d_unnormalized.detach().numpy()
+  GGNd = GGN @ d_unnormalized.detach().cpu().numpy()
+  if global_step % p == 0:
+    print("Done with GGNd")  # debugging
+  GGNd_tensor = torch.tensor(GGNd, device='cuda') # from_numpy()
+  if global_step % p == 0:
+    print("Done with GGNd_tensor")  # debugging
+    print("device of GGNd_tensor: ", GGNd_tensor.device)  # debugging
+    print("device of d_unnormalized: ", d_unnormalized.device)  # debugging
 
-  GGNd_tensor = torch.tensor(GGNd) # from_numpy()
-        
   dGGNd = torch.dot(GGNd_tensor, d_unnormalized)
-        
+  if global_step % p == 0:
+    print("Done with dGGNd")  # debugging      
   dg = - torch.dot(gradients, d_unnormalized)  # numerator: - d^T*g
-        
+  if global_step % p == 0:
+    print("Done with dg")  # debugging      
   alpha_star = dg / dGGNd
+  if global_step % p == 0:
+    print("Done with alpha_star")  # debugging
+
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
 
+
+
+  alpha_log_dir = "/home/suckrowd/Documents/experiments_algoPerf/exp04"
+
+  # Ensure the directory exists
+  os.makedirs(alpha_log_dir, exist_ok=True)
+
+  # Construct the full path to the log file
+  log_file_path = os.path.join(alpha_log_dir, 'alpha_star_log.txt')
+
   # Log the computed alpha_star to a file
-  with open('alpha_star_log.txt', 'a') as log_file:
+  with open(log_file_path, 'a') as log_file:
       log_file.write(f"Global Step: {global_step}, Alpha Star: {alpha_star}, Learning Rate: {current_lr}\n")
   
   
@@ -394,7 +446,7 @@ def get_batch_size(workload_name):
   elif workload_name == 'wmt':
     return 128
   elif workload_name == 'mnist':
-    return 16
+    return 256
   else:
     raise ValueError(f'Unsupported workload name: {workload_name}.')
 
