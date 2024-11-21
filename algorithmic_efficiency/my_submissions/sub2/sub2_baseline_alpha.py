@@ -16,11 +16,13 @@ from torch.optim.lr_scheduler import LinearLR
 from torch.optim.lr_scheduler import SequentialLR
 import torch.nn as nn
 
+import random
 from algorithmic_efficiency import spec
 from algorithmic_efficiency.pytorch_utils import pytorch_setup
 from source.adaptive_optimizer import AdaptiveLROptimizer
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from curvlinops import GGNLinearOperator
+import csv
 
 
 USE_PYTORCH_DDP = pytorch_setup()[0]
@@ -271,9 +273,10 @@ def update_params(workload: spec.Workload,
   params_list = [param for param in current_model.parameters() if param.requires_grad]
 
   theta_0 = parameters_to_vector([param.detach().clone() for param in params_list])  
-  p = 500
+  p = 100
   if global_step % p == 0:
     print("first 10 elements of theta_0: ", theta_0[:10])  # debugging
+    print("Theta_0 lenght:", len(theta_0))  # debugging
 
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
@@ -315,7 +318,7 @@ def update_params(workload: spec.Workload,
   if global_step % p == 0:
     print("Done with GGN")  # debugging
 
-
+# forrward pass through model_fn
   logits_batch, new_model_state = workload.model_fn(
       params=current_model,
       augmented_and_preprocessed_input_batch=batch,
@@ -331,6 +334,9 @@ def update_params(workload: spec.Workload,
     grad_clip = hyperparameters.grad_clip
   else:
     grad_clip = None
+
+  if global_step % p == 0:
+    print("grad_clip: ", grad_clip)  # debugging
 
   loss_dict = workload.loss_fn(
       label_batch=batch['targets'],
@@ -348,22 +354,38 @@ def update_params(workload: spec.Workload,
   loss.backward()
   
   gradients = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None)
+  gradients_norm = torch.norm(gradients, 2)
+
   if global_step % p == 0:
     print("Done with gradients")  # debugging
+    print("graduent lenght:", len(gradients))  # debugging
 
   if grad_clip is not None:
     torch.nn.utils.clip_grad_norm_(
         current_model.parameters(), max_norm=grad_clip)
+  
+
   optimizer_state['optimizer'].step()
   optimizer_state['scheduler'].step()
   
   theta_1 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad])  
   if global_step % p == 0:
-    print("first 10 elements of theta_1: ", theta_1[:10])  # debugging  
+    print("first 10 elements of theta_1: ", theta_1[:10])  # debugging 
+    print("Theta_1 lenght:", len(theta_1))  # debugging
+
   d_unnormalized = theta_1 - theta_0
+  d_unnormalized_norm = torch.norm(d_unnormalized, 2)
+
   if global_step % p == 0:
     print("Done with d_unnormalized")  # debugging
     print("first 10 elements of d_unnormalized: ", d_unnormalized[:10])  # debugging
+    # Ensure d_unnormalized is a list or a sequence
+    d_unnormalized_list = list(d_unnormalized)
+    # Select ten random elements
+    random_elements = random.sample(d_unnormalized_list, 10)
+    # Print the random elements
+    print("Ten random elements of d_unnormalized: ", random_elements)  # debugging
+    print("d_unnormalized lenght:", len(d_unnormalized))  # debugging
 
   GGNd = GGN @ d_unnormalized.detach().cpu().numpy()
   if global_step % p == 0:
@@ -375,12 +397,23 @@ def update_params(workload: spec.Workload,
     print("device of d_unnormalized: ", d_unnormalized.device)  # debugging
 
   dGGNd = torch.dot(GGNd_tensor, d_unnormalized)
+
   if global_step % p == 0:
     print("Done with dGGNd")  # debugging      
   dg = - torch.dot(gradients, d_unnormalized)  # numerator: - d^T*g
+  
   if global_step % p == 0:
-    print("Done with dg")  # debugging      
+    print("Done with dg")  # debugging
+
   alpha_star = dg / dGGNd
+  if global_step % p == 0:
+    print("dg(Zaehler): ", dg.item())  # debugging   
+    print("dGGNd(Nenner): ", dGGNd.item())  # debugging
+    print("alpha_star:", alpha_star.item())  # debugging
+  
+
+  
+
   if global_step % p == 0:
     print("Done with alpha_star")  # debugging
 
@@ -388,17 +421,28 @@ def update_params(workload: spec.Workload,
 
 
 
-  alpha_log_dir = "/home/suckrowd/Documents/experiments_algoPerf/exp04"
+  alpha_log_dir = "/home/suckrowd/Documents/experiments_algoPerf/exp08"
 
   # Ensure the directory exists
   os.makedirs(alpha_log_dir, exist_ok=True)
 
   # Construct the full path to the log file
-  log_file_path = os.path.join(alpha_log_dir, 'alpha_star_log.txt')
+  log_file_path = os.path.join(alpha_log_dir, 'alpha_star_log.csv')
 
-  # Log the computed alpha_star to a file
+  log_data = [global_step, alpha_star.item(), dg.item(), dGGNd.item(), d_unnormalized_norm.item(), gradients_norm.item(), current_lr]
+
+  # Check if the file exists and write a header if needed
+  try:
+      with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
+          writer = csv.writer(log_file)
+          writer.writerow(["Global Step", "Alpha Star", "Zaehler(d x g)", "Nenner (dGGNd)", "d L2 Norm", "gradients L2 Norm", "Current LR"])  # Write header
+  except FileExistsError:
+      pass  # File already exists, no need to write the header
+
+  # Append the log data
   with open(log_file_path, 'a') as log_file:
-      log_file.write(f"Global Step: {global_step}, Alpha Star: {alpha_star}, Learning Rate: {current_lr}\n")
+      writer = csv.writer(log_file)
+      writer.writerow(log_data)
   
   
   
