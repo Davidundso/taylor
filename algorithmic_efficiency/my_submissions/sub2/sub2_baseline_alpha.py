@@ -274,7 +274,10 @@ def update_params(workload: spec.Workload,
 
   theta_0 = parameters_to_vector([param.detach().clone() for param in params_list])  
   p = 100
-  if global_step % p == 0:
+
+  print_bool = global_step % p == 0
+
+  if print_bool:
     print("first 10 elements of theta_0: ", theta_0[:10])  # debugging
     print("Theta_0 lenght:", len(theta_0))  # debugging
 
@@ -356,7 +359,7 @@ def update_params(workload: spec.Workload,
   gradients = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None)
   gradients_norm = torch.norm(gradients, 2)
 
-  if global_step % p == 0:
+  if print_bool:
     print("Done with gradients")  # debugging
     print("graduent lenght:", len(gradients))  # debugging
 
@@ -369,14 +372,18 @@ def update_params(workload: spec.Workload,
   optimizer_state['scheduler'].step()
   
   theta_1 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad])  
-  if global_step % p == 0:
+  if print_bool:
     print("first 10 elements of theta_1: ", theta_1[:10])  # debugging 
     print("Theta_1 lenght:", len(theta_1))  # debugging
 
   d_unnormalized = theta_1 - theta_0
   d_unnormalized_norm = torch.norm(d_unnormalized, 2)
+  d_normalized = d_unnormalized / d_unnormalized_norm
 
-  if global_step % p == 0:
+  if print_bool:
+    print("Norm of d_normalized: ", torch.norm(d_normalized).item()) # debugging
+
+  if print_bool:
     print("Done with d_unnormalized")  # debugging
     print("first 10 elements of d_unnormalized: ", d_unnormalized[:10])  # debugging
     # Ensure d_unnormalized is a list or a sequence
@@ -388,25 +395,33 @@ def update_params(workload: spec.Workload,
     print("d_unnormalized lenght:", len(d_unnormalized))  # debugging
 
   GGNd = GGN @ d_unnormalized.detach().cpu().numpy()
-  if global_step % p == 0:
+  GGNd_normalized = GGN @ d_normalized.detach().cpu().numpy()
+
+  if print_bool:
     print("Done with GGNd")  # debugging
   GGNd_tensor = torch.tensor(GGNd, device='cuda') # from_numpy()
-  if global_step % p == 0:
-    print("Done with GGNd_tensor")  # debugging
-    print("device of GGNd_tensor: ", GGNd_tensor.device)  # debugging
-    print("device of d_unnormalized: ", d_unnormalized.device)  # debugging
+  GGNd_normalized_tensor = torch.tensor(GGNd_normalized, device='cuda') # from_numpy()
+
+  #if print_bool:
+    #print("Done with GGNd_tensor")  # debugging
+    #print("device of GGNd_tensor: ", GGNd_tensor.device)  # debugging
+    #print("device of d_unnormalized: ", d_unnormalized.device)  # debugging
 
   dGGNd = torch.dot(GGNd_tensor, d_unnormalized)
+  dGGNd_normalized = torch.dot(GGNd_normalized_tensor, d_normalized)
 
-  if global_step % p == 0:
+  if print_bool:
     print("Done with dGGNd")  # debugging      
   dg = - torch.dot(gradients, d_unnormalized)  # numerator: - d^T*g
+  dg_normalized = - torch.dot(gradients, d_normalized)  # numerator: - d^T*g
   
-  if global_step % p == 0:
+  if print_bool:
     print("Done with dg")  # debugging
 
   alpha_star = dg / dGGNd
-  if global_step % p == 0:
+  alpha_star_normalized = dg_normalized / dGGNd_normalized
+
+  if print_bool:
     print("dg(Zaehler): ", dg.item())  # debugging   
     print("dGGNd(Nenner): ", dGGNd.item())  # debugging
     print("alpha_star:", alpha_star.item())  # debugging
@@ -414,14 +429,14 @@ def update_params(workload: spec.Workload,
 
   
 
-  if global_step % p == 0:
+  if print_bool:
     print("Done with alpha_star")  # debugging
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
 
 
 
-  alpha_log_dir = "/home/suckrowd/Documents/experiments_algoPerf/exp08"
+  alpha_log_dir = "/home/suckrowd/Documents/experiments_algoPerf/exp09"
 
   # Ensure the directory exists
   os.makedirs(alpha_log_dir, exist_ok=True)
@@ -429,13 +444,15 @@ def update_params(workload: spec.Workload,
   # Construct the full path to the log file
   log_file_path = os.path.join(alpha_log_dir, 'alpha_star_log.csv')
 
-  log_data = [global_step, alpha_star.item(), dg.item(), dGGNd.item(), d_unnormalized_norm.item(), gradients_norm.item(), current_lr]
+  log_data = [global_step, alpha_star.item(), dg.item(), dGGNd.item(), d_unnormalized_norm.item(), gradients_norm.item(),
+   alpha_star_normalized.item(), dg_normalized.item(), dGGNd_normalized.item(), current_lr]
 
   # Check if the file exists and write a header if needed
   try:
       with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
           writer = csv.writer(log_file)
-          writer.writerow(["Global Step", "Alpha Star", "Zaehler(d x g)", "Nenner (dGGNd)", "d L2 Norm", "gradients L2 Norm", "Current LR"])  # Write header
+          writer.writerow(["Global Step", "Alpha Star", "Zaehler(d x g)", "Nenner (dGGNd)", "d L2 Norm", "gradients L2 Norm",
+           "Alpha Star(NORMED)", "Zaehler(d x g) (NORMED)", "Nenner (dGGNd) (NORMED)", "Current LR"])  # Write header
   except FileExistsError:
       pass  # File already exists, no need to write the header
 

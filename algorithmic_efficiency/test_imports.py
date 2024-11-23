@@ -5,6 +5,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 print("Updated sys.path:", sys.path)
 
 from source.adaptive_optimizer import AdaptiveLROptimizer
+from source.plotting import plot_data
 
 # Dummy model, loss function, and optimizer for testing
 import torch.nn as nn
