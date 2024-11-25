@@ -315,9 +315,46 @@ def update_params(workload: spec.Workload,
   loss_fn = get_loss_function(workload.loss_type)
   # data structure expected by GGNLinearOperator
   Data = [(batch['inputs'], batch['targets'])]
-  
 
-  GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
+  if global_step == 0:
+    print("Model architecture:\n", current_model)
+
+  # Adjust target and input shapes
+  for inputs, targets in Data:
+      print("Input shape before any changes:", inputs.shape)
+      print("Target shape before any changes:", targets.shape)
+
+      # Add batch dimension to inputs if missing
+      if len(inputs.shape) == 3:
+          print("Adding batch dimension...")
+          inputs = inputs.unsqueeze(1)
+          print("Input shape after adding batch dimension:", inputs.shape)
+
+      
+
+      # Adjust targets to match inputs
+      if len(targets.shape) == 3:  # Mismatched batch size
+          print("Aligning target shape to match inputs...")
+          targets = targets=targets.unsqueeze(1)  # Adjust batch dimension
+          print("Target shape after adjustment:", targets.shape)
+
+      # Ensure inputs require gradients
+      #inputs.requires_grad_(True)
+      #print("Does inputs require grad?", inputs.requires_grad)
+
+  # Recreate Data structure
+  Data = [(inputs, targets)]
+
+  # Pass to GGNLinearOperator
+  try:
+      GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
+      print("GGNLinearOperator initialized successfully!")
+  except Exception as e:
+      print("Error during GGNLinearOperator initialization:", e)
+
+
+
+  # GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
   if global_step % p == 0:
     print("Done with GGN")  # debugging
 
@@ -436,7 +473,7 @@ def update_params(workload: spec.Workload,
 
 
 
-  alpha_log_dir = "/home/suckrowd/Documents/experiments_algoPerf/exp09"
+  alpha_log_dir = "$WORK/cluster_experiments/exp02"
 
   # Ensure the directory exists
   os.makedirs(alpha_log_dir, exist_ok=True)
