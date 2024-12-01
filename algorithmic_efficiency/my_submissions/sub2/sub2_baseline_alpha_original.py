@@ -316,109 +316,25 @@ def update_params(workload: spec.Workload,
   
 
   # data structure expected by GGNLinearOperator
-  # Data = [(batch['inputs'].to('cuda:0'), batch['targets'].to('cuda:0'))]
-  Data = [(batch['inputs'], batch['targets']view(-1, 1))]
+  Data = [(batch['inputs'], batch['targets'])]
 
   if global_step == 0:
     print("Model architecture:\n", current_model)
     for inputs, targets in Data:
-        print("Input shape before any changes:", inputs.shape)
-        print("Target shape before any changes:", targets.shape)
+        # Check if inputs and targets have the 'shape' attribute
+        if hasattr(inputs, 'shape'):
+            print("Input shape before any changes:", inputs.shape)
+        else:
+            print("Input does not have a 'shape' attribute, type:", type(inputs))
 
-  if False: # debuggin
-  # Adjust target and input shapes
-    for inputs, targets in Data:
-        print("Input shape before any changes:", inputs.shape)
-        print("Target shape before any changes:", targets.shape)
+        if hasattr(targets, 'shape'):
+            print("Target shape before any changes:", targets.shape)
+        else:
+            print("Target does not have a 'shape' attribute, type:", type(targets))
 
-        # Add batch dimension to inputs if missing
-        if len(inputs.shape) == 3:
-            print("Adding batch dimension...")
-            inputs = inputs.unsqueeze(1)
-            print("Input shape after adding batch dimension:", inputs.shape)
-
-        
-
-        # Adjust targets to match inputs
-        if len(targets.shape) == 3:  # Mismatched batch size
-            print("Aligning target shape to match inputs...")
-            targets = targets=targets.unsqueeze(1)  # Adjust batch dimension
-            print("Target shape after adjustment:", targets.shape)
-
-      # Ensure inputs require gradients
-      #inputs.requires_grad_(True)
-      #print("Does inputs require grad?", inputs.requires_grad)
-    # Recreate Data structure
-    Data = [(inputs, targets)]
-
-  # current_model = current_model.to('cuda:0')
-  
-  # params_list = [param.to('cuda:0') for param in params_list]
-
-  
-
-  def test_ggn_components(current_model, loss_fn, params_list, Data):
-      """
-      Test if `current_model`, `loss_fn`, and `Data` are compatible with gradient computations.
-      """
-      try:
-          # Ensure Data is in the expected format
-          assert isinstance(Data, list), "Data should be a list of tuples."
-          assert all(isinstance(item, tuple) and len(item) == 2 for item in Data), \
-              "Each element in Data should be a tuple (inputs, targets)."
-
-          # Extract a single batch (inputs, targets) for testing
-          inputs, targets = Data[0]  # Assuming the first element is representative
-          assert isinstance(inputs, torch.Tensor), "Inputs should be a PyTorch tensor."
-          assert isinstance(targets, torch.Tensor), "Targets should be a PyTorch tensor."
-
-          # 1. Check if model outputs track gradients
-          print("Testing model outputs...")
-          dummy_input = inputs.clone().detach().requires_grad_(True)  # Clone and enable gradients
-          output = current_model(dummy_input)
-
-          assert isinstance(output, torch.Tensor), "Model output is not a tensor!"
-          assert output.requires_grad, "Model output does not track gradients!"
-          print("Model output test passed.")
-
-          # 2. Check if loss function produces differentiable outputs
-          print("Testing loss function...")
-          loss = loss_fn(output, targets)
-
-          assert isinstance(loss, torch.Tensor), "Loss is not a tensor!"
-          assert loss.requires_grad, "Loss does not track gradients!"
-          print("Loss function test passed.")
-
-          # 3. Check if params_list contains valid parameters with requires_grad=True
-          print("Testing params_list...")
-          assert len(params_list) > 0, "Params list is empty!"
-          for param in params_list:
-              assert param.requires_grad, "A parameter in params_list does not require gradients!"
-          print("Params list test passed.")
-
-          print("\nAll tests passed successfully!")
-          return True
-
-      except AssertionError as e:
-          print(f"Test failed: {e}")
-          return False
-
-  
-
-  test_ggn_components(current_model, loss_fn, params_list, Data)
 
 
   GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
-
-  # Pass to GGNLinearOperator (debbuggin version)
-  if False:
-    try:
-      GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
-      print("GGNLinearOperator initialized successfully!")
-    except Exception as e:
-      print("Error during GGNLinearOperator initialization:", e)
-
-
 
   # GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
   if global_step % p == 0:
@@ -592,7 +508,7 @@ def get_batch_size(workload_name):
   if workload_name == 'criteo1tb':
     return 262_144
   elif workload_name == 'fastmri':
-    return 16
+    return 32
   elif workload_name == 'imagenet_resnet':
     return 1024
   elif workload_name == 'imagenet_resnet_silu':
