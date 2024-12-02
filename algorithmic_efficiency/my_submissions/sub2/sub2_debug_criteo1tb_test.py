@@ -264,6 +264,16 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
+  # debug / monitoring gpu memory usage
+  def print_gpu_memory():
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if dev.type == 'cuda':
+        print(torch.cuda.get_device_properties(0))
+        print('Memory Usage:')
+        print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**2,1), 'MB')
+        print('Cached:   ', round(torch.cuda.memory_cached(0)/1024**2,1), 'MB')
+  
+  print("initial gpu alloc:", print_gpu_memory())
   
   device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -362,7 +372,7 @@ def update_params(workload: spec.Workload,
 
   # loss_fn.to(device)
   # current_model.to(device)
-
+  print("gpu alloc before ggn:", print_gpu_memory())
 
   GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
 
@@ -373,6 +383,7 @@ def update_params(workload: spec.Workload,
   # GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
   if global_step % p == 0:
     print("Done with GGN")  # debugging
+    print("gpu alloc after ggn:", print_gpu_memory())
 
 # forrward pass through model_fn
   logits_batch, new_model_state = workload.model_fn(
@@ -501,7 +512,7 @@ def update_params(workload: spec.Workload,
 
 
 
-  alpha_log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo0112_4")
+  alpha_log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo0212")
 
   # Ensure the directory exists
   os.makedirs(alpha_log_dir, exist_ok=True)
