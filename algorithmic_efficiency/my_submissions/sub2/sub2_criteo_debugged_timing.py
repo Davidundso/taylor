@@ -17,6 +17,7 @@ from torch.optim.lr_scheduler import SequentialLR
 import torch.nn as nn
 
 import random
+import time
 from algorithmic_efficiency import spec
 from algorithmic_efficiency.pytorch_utils import pytorch_setup
 from source.adaptive_optimizer import AdaptiveLROptimizer
@@ -264,6 +265,23 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
+  # define dict for time
+  if global_step == 0:
+    train_time = {
+    "start_time": None,         # Startzeit des Trainings
+    "last_step_start": None,    # Startzeit des vorherigen Schritts
+    "total_time": 0.0,          # Gesamtzeit des Trainings
+    }
+    train_time["start_time"] = time.time()
+    train_time["last_step_start"] = train_time["start_time"]
+
+  step_start_time = time.time()
+  if global_step > 0:
+    time_between_steps = step_start_time - train_time["last_step_start"]
+  else:
+    time_between_steps = 0.0  # Keine Zeit zwischen Schritten für den ersten Schritt
+  
+
   # debug / monitoring gpu memory usage
   def print_gpu_memory():
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -273,7 +291,7 @@ def update_params(workload: spec.Workload,
         print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**2,1), 'MB')
         print('Cached:   ', round(torch.cuda.memory_cached(0)/1024**2,1), 'MB')
   
-  print("initial gpu alloc:", print_gpu_memory())
+  
   
   device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -372,9 +390,13 @@ def update_params(workload: spec.Workload,
 
   # loss_fn.to(device)
   # current_model.to(device)
-  print("gpu alloc before ggn:", print_gpu_memory())
+  print("GPU alloc before GGN: ")
+  print_gpu_memory()
 
   GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
+
+  print("GPU alloc after GGN: ")
+  print_gpu_memory()
 
   del Data
   del params_list
@@ -383,7 +405,7 @@ def update_params(workload: spec.Workload,
   # GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
   if global_step % p == 0:
     print("Done with GGN")  # debugging
-    print("gpu alloc after ggn:", print_gpu_memory())
+    
 
 # forrward pass through model_fn
   logits_batch, new_model_state = workload.model_fn(
@@ -557,6 +579,41 @@ def update_params(workload: spec.Workload,
                  global_step,
                  loss.item(),
                  grad_norm.item())
+    
+
+  step_end_time = time.time()
+  step_time = step_end_time - step_start_time
+
+    # Gesamtzeit bis zum aktuellen Schritt
+  train_time["total_time"] = step_end_time - train_time["start_time"]
+
+  # Letzte Startzeit aktualisieren
+  train_time["last_step_start"] = step_start_time
+
+  if global_step < 20:
+      # Ergebnisse ausgeben
+    print(f"Global Step: {global_step}")
+    print(f"  Schrittzeit: {step_time:.4f} Sekunden")
+    print(f"  Zeit zwischen den Schritten: {time_between_steps:.4f} Sekunden")
+    print(f"  Gesamtzeit: {train_time['total_time']:.4f} Sekunden")
+
+  log_file_path_time = os.path.join(alpha_log_dir, "time_log.csv")
+
+# Logdaten vorbereiten
+  log_data_time = [global_step, step_time, time_between_steps, train_time["total_time"]]
+
+  # Überprüfen, ob die Datei existiert und falls nicht, Header schreiben
+  try:
+      with open(log_file_path, 'x') as log_file:  # Öffnen im exklusiven Modus für die Erstellung
+          writer = csv.writer(log_file)
+          writer.writerow(["global_step", "step_time", "time_between_steps", "total_time"])  # Header schreiben
+  except FileExistsError:
+      pass  # Datei existiert bereits, Header nicht erneut schreiben
+
+  # Log-Daten anhängen
+  with open(log_file_path, 'a') as log_file:
+       writer = csv.writer(log_file)
+       writer.writerow(log_data_time)
 
   return (optimizer_state, current_param_container, new_model_state)
 
