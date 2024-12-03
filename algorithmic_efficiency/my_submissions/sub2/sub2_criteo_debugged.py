@@ -264,7 +264,18 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
+  # debug / monitoring gpu memory usage
+  def print_gpu_memory():
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if dev.type == 'cuda':
+        print(torch.cuda.get_device_properties(0))
+        print('Memory Usage:')
+        print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**2,1), 'MB')
+        print('Cached:   ', round(torch.cuda.memory_cached(0)/1024**2,1), 'MB')
   
+  print("initial gpu alloc:", print_gpu_memory())
+  
+  device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
   hyperparameters = HPARAMS
 
@@ -272,14 +283,21 @@ def update_params(workload: spec.Workload,
 
   params_list = [param for param in current_model.parameters() if param.requires_grad]
 
-  theta_0 = parameters_to_vector([param.detach().clone() for param in params_list])  
+  # theta_0 = parameters_to_vector([param.detach().clone() for param in params_list])  
   p = 100
-
   print_bool = global_step % p == 0
+
+  theta_0 = parameters_to_vector([param.detach().clone() for param in params_list]).cpu()
 
   if print_bool:
     print("first 10 elements of theta_0: ", theta_0[:10])  # debugging
     print("Theta_0 lenght:", len(theta_0))  # debugging
+
+  
+
+  #if print_bool:
+  #  print("first 10 elements of theta_0: ", theta_0[:10])  # debugging
+  #  print("Theta_0 lenght:", len(theta_0))  # debugging
 
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
@@ -314,9 +332,17 @@ def update_params(workload: spec.Workload,
 
   loss_fn = get_loss_function(workload.loss_type)
   
+  
 
   # data structure expected by GGNLinearOperator
-  Data = [(batch['inputs'], batch['targets'])]
+  Data = [(batch['inputs'], batch['targets'].view(-1, 1))]
+
+  # device error debug:
+  Data = [
+    (batch[0].to(device), batch[1].view(-1, 1).to(device))  # batch[0] is inputs, batch[1] is targets
+    for batch in Data
+  ]
+  
 
   if global_step == 0:
     print("Model architecture:\n", current_model)
@@ -332,13 +358,32 @@ def update_params(workload: spec.Workload,
         else:
             print("Target does not have a 'shape' attribute, type:", type(targets))
 
+  # device error debugging
+  if global_step == 0:
+    for name, param in current_model.named_parameters():
+      print(f"Parameter {name} is on device: {param.device}")
 
+    for name, buffer in current_model.named_buffers():
+        print(f"Buffer {name} is on device: {buffer.device}")
+
+    for i, param in enumerate(params_list):
+      print(f"Parameter {i} is on device: {param.device}")
+
+
+  # loss_fn.to(device)
+  # current_model.to(device)
+  print("gpu alloc before ggn:", print_gpu_memory())
 
   GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
+
+  del Data
+  del params_list
+  torch.cuda.empty_cache()
 
   # GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
   if global_step % p == 0:
     print("Done with GGN")  # debugging
+    print("gpu alloc after ggn:", print_gpu_memory())
 
 # forrward pass through model_fn
   logits_batch, new_model_state = workload.model_fn(
@@ -375,7 +420,7 @@ def update_params(workload: spec.Workload,
 
   loss.backward()
   
-  gradients = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None)
+  gradients = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None).cpu()
   gradients_norm = torch.norm(gradients, 2)
 
   if print_bool:
@@ -390,7 +435,7 @@ def update_params(workload: spec.Workload,
   optimizer_state['optimizer'].step()
   optimizer_state['scheduler'].step()
   
-  theta_1 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad])  
+  theta_1 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad]).cpu()  
   if print_bool:
     print("first 10 elements of theta_1: ", theta_1[:10])  # debugging 
     print("Theta_1 lenght:", len(theta_1))  # debugging
@@ -403,31 +448,43 @@ def update_params(workload: spec.Workload,
     print("Norm of d_normalized: ", torch.norm(d_normalized).item()) # debugging
 
   if print_bool:
-    print("Done with d_unnormalized")  # debugging
-    print("first 10 elements of d_unnormalized: ", d_unnormalized[:10])  # debugging
-    # Ensure d_unnormalized is a list or a sequence
-    d_unnormalized_list = list(d_unnormalized)
-    # Select ten random elements
-    random_elements = random.sample(d_unnormalized_list, 10)
-    # Print the random elements
-    print("Ten random elements of d_unnormalized: ", random_elements)  # debugging
-    print("d_unnormalized lenght:", len(d_unnormalized))  # debugging
+    # Compute the starting index based on the formula
+    start_index = len(d_unnormalized) // 2 + 3 * global_step
+    
+    # Ensure the start_index does not go out of bounds
+    start_index = min(start_index, len(d_unnormalized) - 10)  # Make sure there are enough elements left
+    
+    # Print 10 consecutive elements starting from the computed index
+    consecutive_elements = d_unnormalized[start_index:start_index + 10]
+    
+    # Print the 10 consecutive elements (move to CPU if needed)
+    print(f"Consecutive elements from index {start_index}: {consecutive_elements.cpu().numpy()}")  # debugging
+    print(f"d_unnormalized length: {len(d_unnormalized)}")  # debugging
+
 
   GGNd = GGN @ d_unnormalized.detach().cpu().numpy()
   GGNd_normalized = GGN @ d_normalized.detach().cpu().numpy()
 
   if print_bool:
     print("Done with GGNd")  # debugging
-  GGNd_tensor = torch.tensor(GGNd, device='cuda') # from_numpy()
-  GGNd_normalized_tensor = torch.tensor(GGNd_normalized, device='cuda') # from_numpy()
+  # Ensure all tensors are created on the CPU
+  GGNd_tensor = torch.tensor(GGNd, device='cpu')  # Move to CPU
+  GGNd_normalized_tensor = torch.tensor(GGNd_normalized, device='cpu')  # Move to CPU
 
-  #if print_bool:
-    #print("Done with GGNd_tensor")  # debugging
-    #print("device of GGNd_tensor: ", GGNd_tensor.device)  # debugging
-    #print("device of d_unnormalized: ", d_unnormalized.device)  # debugging
+  # Ensure that d_unnormalized and d_normalized are also on CPU
+  d_unnormalized = d_unnormalized.to('cpu')  # Move to CPU if necessary
+  d_normalized = d_normalized.to('cpu')  # Move to CPU if necessary
 
+  # Perform dot products on CPU
   dGGNd = torch.dot(GGNd_tensor, d_unnormalized)
   dGGNd_normalized = torch.dot(GGNd_normalized_tensor, d_normalized)
+
+  # Optional: If you need to print or debug
+  #if print_bool:
+  #    print("Done with GGNd_tensor")  # debugging
+  #    print("device of GGNd_tensor: ", GGNd_tensor.device)  # debugging
+  #    print("device of d_unnormalized: ", d_unnormalized.device)  # debugging
+
 
   if print_bool:
     print("Done with dGGNd")  # debugging      
@@ -455,7 +512,7 @@ def update_params(workload: spec.Workload,
 
 
 
-  alpha_log_dir = "$WORK/cluster_experiments/mnist"
+  alpha_log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo0312_dbsb10_noEval")
 
   # Ensure the directory exists
   os.makedirs(alpha_log_dir, exist_ok=True)
@@ -480,7 +537,8 @@ def update_params(workload: spec.Workload,
       writer = csv.writer(log_file)
       writer.writerow(log_data)
   
-  
+  # remove variables to free (cpu) memory
+  del alpha_star, dg, dGGNd, d_unnormalized_norm, gradients_norm, alpha_star_normalized, dg_normalized, dGGNd_normalized
   
 
   # Log training metrics - loss, grad_norm, batch_size.
@@ -504,11 +562,12 @@ def update_params(workload: spec.Workload,
 
 
 def get_batch_size(workload_name):
-  # Return the global batch size.
+  # Return the global batch size. 
+  # divide by four as only one instead of four a100 will be used
   if workload_name == 'criteo1tb':
-    return 262_144
+    return int(262_144/10)            # debug: super small minibatches
   elif workload_name == 'fastmri':
-    return 32
+    return int(32/8)
   elif workload_name == 'imagenet_resnet':
     return 1024
   elif workload_name == 'imagenet_resnet_silu':
