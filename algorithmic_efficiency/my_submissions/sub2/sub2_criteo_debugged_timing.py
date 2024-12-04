@@ -265,21 +265,7 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
-  # define dict for time
-  if global_step == 0:
-    train_time = {
-    "start_time": None,         # Startzeit des Trainings
-    "last_step_start": None,    # Startzeit des vorherigen Schritts
-    "total_time": 0.0,          # Gesamtzeit des Trainings
-    }
-    train_time["start_time"] = time.time()
-    train_time["last_step_start"] = train_time["start_time"]
-
-  step_start_time = time.time()
-  if global_step > 0:
-    time_between_steps = step_start_time - train_time["last_step_start"]
-  else:
-    time_between_steps = 0.0  # Keine Zeit zwischen Schritten für den ersten Schritt
+  
   
 
   # debug / monitoring gpu memory usage
@@ -291,11 +277,14 @@ def update_params(workload: spec.Workload,
         print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**2,1), 'MB')
         print('Cached:   ', round(torch.cuda.memory_cached(0)/1024**2,1), 'MB')
   
-  
+  timings = []
+  start_time = time.time()
   
   device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
   hyperparameters = HPARAMS
+
+  ggn_preperation_time = time.time()
 
   current_model = current_param_container
 
@@ -317,8 +306,10 @@ def update_params(workload: spec.Workload,
   #  print("first 10 elements of theta_0: ", theta_0[:10])  # debugging
   #  print("Theta_0 lenght:", len(theta_0))  # debugging
 
+  excluded_start_time_prep = time.time()
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
+  excluded_time = time.time() - excluded_start_time_prep
 
   # create torch loss function from workload loss type for GGN computation
   def get_loss_function(loss_type):
@@ -361,6 +352,7 @@ def update_params(workload: spec.Workload,
     for batch in Data
   ]
   
+  timings.append('GGN input prep time', time.time() - ggn_preperation_time - excluded_time)
 
   if global_step == 0:
     print("Model architecture:\n", current_model)
@@ -393,7 +385,11 @@ def update_params(workload: spec.Workload,
   print("GPU alloc before GGN: ")
   print_gpu_memory()
 
+  ggn_start_time = time.time()
+
   GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
+
+  timings.append('GGN time', time.time() - ggn_start_time)
 
   print("GPU alloc after GGN: ")
   print_gpu_memory()
@@ -442,6 +438,8 @@ def update_params(workload: spec.Workload,
 
   loss.backward()
   
+  alpha_computations_time = time.time()
+
   gradients = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None).cpu()
   gradients_norm = torch.norm(gradients, 2)
 
@@ -453,9 +451,12 @@ def update_params(workload: spec.Workload,
     torch.nn.utils.clip_grad_norm_(
         current_model.parameters(), max_norm=grad_clip)
   
+  excluded_start_time_alpha = time.time()
 
   optimizer_state['optimizer'].step()
   optimizer_state['scheduler'].step()
+
+  excluded_time_alpha = time.time() - excluded_start_time_alpha
   
   theta_1 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad]).cpu()  
   if print_bool:
@@ -519,6 +520,8 @@ def update_params(workload: spec.Workload,
   alpha_star = dg / dGGNd
   alpha_star_normalized = dg_normalized / dGGNd_normalized
 
+  timings.append('alpha computations time', time.time() - alpha_computations_time - excluded_time_alpha)
+
   if print_bool:
     print("dg(Zaehler): ", dg.item())  # debugging   
     print("dGGNd(Nenner): ", dGGNd.item())  # debugging
@@ -561,6 +564,8 @@ def update_params(workload: spec.Workload,
   
   # remove variables to free (cpu) memory
   del alpha_star, dg, dGGNd, d_unnormalized_norm, gradients_norm, alpha_star_normalized, dg_normalized, dGGNd_normalized
+
+
   
 
   # Log training metrics - loss, grad_norm, batch_size.
@@ -579,41 +584,30 @@ def update_params(workload: spec.Workload,
                  global_step,
                  loss.item(),
                  grad_norm.item())
-    
 
-  step_end_time = time.time()
-  step_time = step_end_time - step_start_time
+  total_time = time.time() - start_time
+  timings.append('total step time', total_time)
 
-    # Gesamtzeit bis zum aktuellen Schritt
-  train_time["total_time"] = step_end_time - train_time["start_time"]
+  # Log the timings
+  time_log_dir = alpha_log_dir
+  os.makedirs(time_log_dir, exist_ok=True)
 
-  # Letzte Startzeit aktualisieren
-  train_time["last_step_start"] = step_start_time
+  timings_csv_path = os.path.join(time_log_dir, 'timings.csv')
 
-  if global_step < 20:
-      # Ergebnisse ausgeben
-    print(f"Global Step: {global_step}")
-    print(f"  Schrittzeit: {step_time:.4f} Sekunden")
-    print(f"  Zeit zwischen den Schritten: {time_between_steps:.4f} Sekunden")
-    print(f"  Gesamtzeit: {train_time['total_time']:.4f} Sekunden")
-
-  log_file_path_time = os.path.join(alpha_log_dir, "time_log.csv")
-
-# Logdaten vorbereiten
-  log_data_time = [global_step, step_time, time_between_steps, train_time["total_time"]]
-
-  # Überprüfen, ob die Datei existiert und falls nicht, Header schreiben
+  # Check if the file exists and write a header if needed
   try:
-      with open(log_file_path, 'x') as log_file:  # Öffnen im exklusiven Modus für die Erstellung
-          writer = csv.writer(log_file)
-          writer.writerow(["global_step", "step_time", "time_between_steps", "total_time"])  # Header schreiben
+      with open(timings_csv_path, 'x', newline='') as csvfile:  # Open in exclusive creation mode
+          csvwriter = csv.writer(csvfile)
+          csvwriter.writerow(['Global Step', 'GGN input prep time', 'GGN time', 'alpha computations time', 'total_time'])  # Write header
   except FileExistsError:
-      pass  # Datei existiert bereits, Header nicht erneut schreiben
+      pass  # File already exists, no need to write the header
 
-  # Log-Daten anhängen
-  with open(log_file_path, 'a') as log_file:
-       writer = csv.writer(log_file)
-       writer.writerow(log_data_time)
+  # Append the timings data
+  with open(timings_csv_path, 'a', newline='') as csvfile:
+      csvwriter = csv.writer(csvfile)
+      row = [global_step] + [timing[1] for timing in timings]
+      csvwriter.writerow(row)    
+
 
   return (optimizer_state, current_param_container, new_model_state)
 
