@@ -284,7 +284,7 @@ def update_params(workload: spec.Workload,
 
   hyperparameters = HPARAMS
 
-  ggn_preperation_time = time.time()
+  GGN_prep_time_start = time.time()
 
   current_model = current_param_container
 
@@ -352,7 +352,8 @@ def update_params(workload: spec.Workload,
     for batch in Data
   ]
   
-  timings.append('GGN input prep time', time.time() - ggn_preperation_time - excluded_time)
+  GGN_prep_time = time.time() - GGN_prep_time_start - excluded_time
+  timings.append(('GGN prep time', GGN_prep_time))
 
   if global_step == 0:
     print("Model architecture:\n", current_model)
@@ -389,7 +390,8 @@ def update_params(workload: spec.Workload,
 
   GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
 
-  timings.append('GGN time', time.time() - ggn_start_time)
+  GGN_time = time.time() - ggn_start_time
+  timings.append(('GGN compute time', GGN_time))
 
   print("GPU alloc after GGN: ")
   print_gpu_memory()
@@ -438,7 +440,7 @@ def update_params(workload: spec.Workload,
 
   loss.backward()
   
-  alpha_computations_time = time.time()
+  alpha_comp_time_start = time.time()
 
   gradients = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None).cpu()
   gradients_norm = torch.norm(gradients, 2)
@@ -520,7 +522,8 @@ def update_params(workload: spec.Workload,
   alpha_star = dg / dGGNd
   alpha_star_normalized = dg_normalized / dGGNd_normalized
 
-  timings.append('alpha computations time', time.time() - alpha_computations_time - excluded_time_alpha)
+  alpha_comp_time = time.time() - alpha_comp_time_start - excluded_time_alpha
+  timings.append(('alpha computations time', alpha_comp_time))
 
   if print_bool:
     print("dg(Zaehler): ", dg.item())  # debugging   
@@ -537,13 +540,13 @@ def update_params(workload: spec.Workload,
 
 
 
-  alpha_log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo0312_dbsb10_noEval")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo0412_dbsb8_noEval")
 
   # Ensure the directory exists
-  os.makedirs(alpha_log_dir, exist_ok=True)
+  os.makedirs(log_dir, exist_ok=True)
 
   # Construct the full path to the log file
-  log_file_path = os.path.join(alpha_log_dir, 'alpha_star_log.csv')
+  log_file_path = os.path.join(log_dir, 'alpha_star_log.csv')
 
   log_data = [global_step, alpha_star.item(), dg.item(), dGGNd.item(), d_unnormalized_norm.item(), gradients_norm.item(),
    alpha_star_normalized.item(), dg_normalized.item(), dGGNd_normalized.item(), current_lr]
@@ -586,19 +589,28 @@ def update_params(workload: spec.Workload,
                  grad_norm.item())
 
   total_time = time.time() - start_time
-  timings.append('total step time', total_time)
+  timings.append(('total time', total_time))
 
+  total_alpha_time = total_time - alpha_comp_time - GGN_prep_time - GGN_time
+  timings.append(('total alpha-related time', total_alpha_time))
+
+  total_non_alpha_time = total_time - total_alpha_time
+  timings.append(('total non-alpha time', total_non_alpha_time))
+  
   # Log the timings
-  time_log_dir = alpha_log_dir
+  time_log_dir = log_dir
   os.makedirs(time_log_dir, exist_ok=True)
 
   timings_csv_path = os.path.join(time_log_dir, 'timings.csv')
+
+  # Generate the header dynamically
+  header = ['Global Step'] + [timing[0] for timing in timings]
 
   # Check if the file exists and write a header if needed
   try:
       with open(timings_csv_path, 'x', newline='') as csvfile:  # Open in exclusive creation mode
           csvwriter = csv.writer(csvfile)
-          csvwriter.writerow(['Global Step', 'GGN input prep time', 'GGN time', 'alpha computations time', 'total_time'])  # Write header
+          csvwriter.writerow(header)  # Write header
   except FileExistsError:
       pass  # File already exists, no need to write the header
 
@@ -608,15 +620,16 @@ def update_params(workload: spec.Workload,
       row = [global_step] + [timing[1] for timing in timings]
       csvwriter.writerow(row)    
 
+  timings.clear()
 
   return (optimizer_state, current_param_container, new_model_state)
 
 
 def get_batch_size(workload_name):
   # Return the global batch size. 
-  # divide by four as only one instead of four a100 will be used
+  # divide by eight as only one instead of four a100 will be used
   if workload_name == 'criteo1tb':
-    return int(262_144/10)            # debug: super small minibatches
+    return int(262_144/8)            
   elif workload_name == 'fastmri':
     return int(32/8)
   elif workload_name == 'imagenet_resnet':
