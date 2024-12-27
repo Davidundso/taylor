@@ -1,9 +1,7 @@
 """Submission file for an NAdamW optimizer with warmup+cosine LR in PyTorch."""
-# to fix import error
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..')))
-
 import math
 from typing import Dict, Iterator, List, Tuple
 
@@ -14,16 +12,9 @@ import torch.distributed.nn as dist_nn
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.optim.lr_scheduler import LinearLR
 from torch.optim.lr_scheduler import SequentialLR
-import torch.nn as nn
 
-import random
 from algorithmic_efficiency import spec
 from algorithmic_efficiency.pytorch_utils import pytorch_setup
-from source.adaptive_optimizer import AdaptiveLROptimizer
-from torch.nn.utils import parameters_to_vector, vector_to_parameters
-from curvlinops import GGNLinearOperator
-import csv
-
 
 USE_PYTORCH_DDP = pytorch_setup()[0]
 
@@ -246,7 +237,6 @@ def init_optimizer_state(workload: spec.Workload,
   return optimizer_state
 
 
-
 def update_params(workload: spec.Workload,
                   current_param_container: spec.ParameterContainer,
                   current_params_types: spec.ParameterTypeTree,
@@ -264,83 +254,12 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
-  
-
   hyperparameters = HPARAMS
 
   current_model = current_param_container
-
-  params_list = [param for param in current_model.parameters() if param.requires_grad]
-
-  theta_0 = parameters_to_vector([param.detach().clone() for param in params_list])  
-  p = 100
-
-  print_bool = global_step % p == 0
-
-  if print_bool:
-    print("first 10 elements of theta_0: ", theta_0[:10])  # debugging
-    print("Theta_0 lenght:", len(theta_0))  # debugging
-
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
 
-  # create torch loss function from workload loss type for GGN computation
-  def get_loss_function(loss_type):
-      """
-      Maps a loss type to a PyTorch loss function.
-
-      Args:
-          loss_type (LossType): The loss type Enum.
-
-      Returns:
-          A PyTorch loss function (instance of nn.Module).
-      """
-      loss_mapping = {
-          "SOFTMAX_CROSS_ENTROPY": nn.CrossEntropyLoss(),
-          "SIGMOID_CROSS_ENTROPY": nn.BCEWithLogitsLoss(),
-          "MEAN_SQUARED_ERROR": nn.MSELoss(),
-          "CTC_LOSS": nn.CTCLoss(),  # Requires alignment inputs
-          "MEAN_ABSOLUTE_ERROR": nn.L1Loss(),
-      }
-
-      # Convert Enum to string (e.g., "LossType.SOFTMAX_CROSS_ENTROPY" -> "SOFTMAX_CROSS_ENTROPY")
-      loss_type_str = loss_type.name if hasattr(loss_type, 'name') else str(loss_type)
-
-      if loss_type_str not in loss_mapping:
-          raise ValueError(f"Unsupported loss type: {loss_type_str}")
-
-      return loss_mapping[loss_type_str]
-
-
-  loss_fn = get_loss_function(workload.loss_type)
-  
-
-  # data structure expected by GGNLinearOperator
-  Data = [(batch['inputs'], batch['targets'])]
-
-  if global_step == 0:
-    print("Model architecture:\n", current_model)
-    for inputs, targets in Data:
-        # Check if inputs and targets have the 'shape' attribute
-        if hasattr(inputs, 'shape'):
-            print("Input shape before any changes:", inputs.shape)
-        else:
-            print("Input does not have a 'shape' attribute, type:", type(inputs))
-
-        if hasattr(targets, 'shape'):
-            print("Target shape before any changes:", targets.shape)
-        else:
-            print("Target does not have a 'shape' attribute, type:", type(targets))
-
-
-
-  GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
-
-  # GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
-  if global_step % p == 0:
-    print("Done with GGN")  # debugging
-
-# forrward pass through model_fn
   logits_batch, new_model_state = workload.model_fn(
       params=current_model,
       augmented_and_preprocessed_input_batch=batch,
@@ -357,9 +276,6 @@ def update_params(workload: spec.Workload,
   else:
     grad_clip = None
 
-  if global_step % p == 0:
-    print("grad_clip: ", grad_clip)  # debugging
-
   loss_dict = workload.loss_fn(
       label_batch=batch['targets'],
       logits_batch=logits_batch,
@@ -374,114 +290,12 @@ def update_params(workload: spec.Workload,
   loss = summed_loss / n_valid_examples
 
   loss.backward()
-  
-  gradients = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None)
-  gradients_norm = torch.norm(gradients, 2)
-
-  if print_bool:
-    print("Done with gradients")  # debugging
-    print("graduent lenght:", len(gradients))  # debugging
 
   if grad_clip is not None:
     torch.nn.utils.clip_grad_norm_(
         current_model.parameters(), max_norm=grad_clip)
-  
-
   optimizer_state['optimizer'].step()
   optimizer_state['scheduler'].step()
-  
-  theta_1 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad])  
-  if print_bool:
-    print("first 10 elements of theta_1: ", theta_1[:10])  # debugging 
-    print("Theta_1 lenght:", len(theta_1))  # debugging
-
-  d_unnormalized = theta_1 - theta_0
-  d_unnormalized_norm = torch.norm(d_unnormalized, 2)
-  d_normalized = d_unnormalized / d_unnormalized_norm
-
-  if print_bool:
-    print("Norm of d_normalized: ", torch.norm(d_normalized).item()) # debugging
-
-  if print_bool:
-    print("Done with d_unnormalized")  # debugging
-    print("first 10 elements of d_unnormalized: ", d_unnormalized[:10])  # debugging
-    # Ensure d_unnormalized is a list or a sequence
-    d_unnormalized_list = list(d_unnormalized)
-    # Select ten random elements
-    random_elements = random.sample(d_unnormalized_list, 10)
-    # Print the random elements
-    print("Ten random elements of d_unnormalized: ", random_elements)  # debugging
-    print("d_unnormalized lenght:", len(d_unnormalized))  # debugging
-
-  GGNd = GGN @ d_unnormalized.detach().cpu().numpy()
-  GGNd_normalized = GGN @ d_normalized.detach().cpu().numpy()
-
-  if print_bool:
-    print("Done with GGNd")  # debugging
-  GGNd_tensor = torch.tensor(GGNd, device='cuda') # from_numpy()
-  GGNd_normalized_tensor = torch.tensor(GGNd_normalized, device='cuda') # from_numpy()
-
-  #if print_bool:
-    #print("Done with GGNd_tensor")  # debugging
-    #print("device of GGNd_tensor: ", GGNd_tensor.device)  # debugging
-    #print("device of d_unnormalized: ", d_unnormalized.device)  # debugging
-
-  dGGNd = torch.dot(GGNd_tensor, d_unnormalized)
-  dGGNd_normalized = torch.dot(GGNd_normalized_tensor, d_normalized)
-
-  if print_bool:
-    print("Done with dGGNd")  # debugging      
-  dg = - torch.dot(gradients, d_unnormalized)  # numerator: - d^T*g
-  dg_normalized = - torch.dot(gradients, d_normalized)  # numerator: - d^T*g
-  
-  if print_bool:
-    print("Done with dg")  # debugging
-
-  alpha_star = dg / dGGNd
-  alpha_star_normalized = dg_normalized / dGGNd_normalized
-
-  if print_bool:
-    print("dg(Zaehler): ", dg.item())  # debugging   
-    print("dGGNd(Nenner): ", dGGNd.item())  # debugging
-    print("alpha_star:", alpha_star.item())  # debugging
-  
-
-  
-
-  if print_bool:
-    print("Done with alpha_star")  # debugging
-
-  current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
-
-
-
-  alpha_log_dir = "/home/suckrowd/Documents/experiments_algoPerf/mnist111224"
-
-  # Ensure the directory exists
-  os.makedirs(alpha_log_dir, exist_ok=True)
-
-  # Construct the full path to the log file
-  log_file_path = os.path.join(alpha_log_dir, 'alpha_star_log.csv')
-
-  log_data = [global_step, alpha_star.item(), dg.item(), dGGNd.item(), d_unnormalized_norm.item(), gradients_norm.item(),
-   alpha_star_normalized.item(), dg_normalized.item(), dGGNd_normalized.item(), current_lr]
-
-  # Check if the file exists and write a header if needed
-  try:
-      with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
-          writer = csv.writer(log_file)
-          writer.writerow(["Global Step", "Alpha Star", "Zaehler(d x g)", "Nenner (dGGNd)", "d L2 Norm", "gradients L2 Norm",
-           "Alpha Star(NORMED)", "Zaehler(d x g) (NORMED)", "Nenner (dGGNd) (NORMED)", "Current LR"])  # Write header
-  except FileExistsError:
-      pass  # File already exists, no need to write the header
-
-  # Append the log data
-  with open(log_file_path, 'a') as log_file:
-      writer = csv.writer(log_file)
-      writer.writerow(log_data)
-  
-  
-  
 
   # Log training metrics - loss, grad_norm, batch_size.
   if global_step <= 100 or global_step % 500 == 0:
@@ -526,7 +340,7 @@ def get_batch_size(workload_name):
   elif workload_name == 'wmt':
     return 128
   elif workload_name == 'mnist':
-    return int(256/4)
+    return 16
   else:
     raise ValueError(f'Unsupported workload name: {workload_name}.')
 

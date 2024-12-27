@@ -17,6 +17,7 @@ from torch.optim.lr_scheduler import SequentialLR
 import torch.nn as nn
 
 import random
+import time
 from algorithmic_efficiency import spec
 from algorithmic_efficiency.pytorch_utils import pytorch_setup
 from source.adaptive_optimizer import AdaptiveLROptimizer
@@ -265,24 +266,50 @@ def update_params(workload: spec.Workload,
   del hyperparameters
 
   
+  
+
+  # debug / monitoring gpu memory usage
+  def print_gpu_memory():
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if dev.type == 'cuda':
+        print(torch.cuda.get_device_properties(0))
+        print('Memory Usage:')
+        print('Allocated:', round(torch.cuda.memory_allocated(0)/1024**2,1), 'MB')
+        print('Cached:   ', round(torch.cuda.memory_cached(0)/1024**2,1), 'MB')
+  
+  timings = []
+  start_time = time.time()
+  
+  device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
   hyperparameters = HPARAMS
+
+  GGN_prep_time_start = time.time()
 
   current_model = current_param_container
 
   params_list = [param for param in current_model.parameters() if param.requires_grad]
 
-  theta_0 = parameters_to_vector([param.detach().clone() for param in params_list])  
+  # theta_0 = parameters_to_vector([param.detach().clone() for param in params_list])  
   p = 100
-
   print_bool = global_step % p == 0
+
+  theta_0 = parameters_to_vector([param.detach().clone() for param in params_list]).cpu()
 
   if print_bool:
     print("first 10 elements of theta_0: ", theta_0[:10])  # debugging
     print("Theta_0 lenght:", len(theta_0))  # debugging
 
+  
+
+  #if print_bool:
+  #  print("first 10 elements of theta_0: ", theta_0[:10])  # debugging
+  #  print("Theta_0 lenght:", len(theta_0))  # debugging
+
+  excluded_start_time_prep = time.time()
   current_model.train()
   optimizer_state['optimizer'].zero_grad()
+  excluded_time = time.time() - excluded_start_time_prep
 
   # create torch loss function from workload loss type for GGN computation
   def get_loss_function(loss_type):
@@ -314,9 +341,20 @@ def update_params(workload: spec.Workload,
 
   loss_fn = get_loss_function(workload.loss_type)
   
+  
 
   # data structure expected by GGNLinearOperator
-  Data = [(batch['inputs'], batch['targets'])]
+  Data = [(batch['inputs'].mean(dim=0, keepdim=True), batch['targets'])]
+
+  # device error debug:
+  Data = [
+    (batch[0].to(device), batch[1].to(device))  # batch[0] is inputs, batch[1] is targets
+    for batch in Data
+  ]
+  print("Data dimensions: ", Data[0][0].shape, Data[0][1].shape)  # debugging
+  
+  GGN_prep_time = time.time() - GGN_prep_time_start - excluded_time
+  timings.append(('GGN prep time', GGN_prep_time))
 
   if global_step == 0:
     print("Model architecture:\n", current_model)
@@ -332,13 +370,43 @@ def update_params(workload: spec.Workload,
         else:
             print("Target does not have a 'shape' attribute, type:", type(targets))
 
+  # device error debugging
+  if global_step == 0:
+    for name, param in current_model.named_parameters():
+      print(f"Parameter {name} is on device: {param.device}")
 
+    for name, buffer in current_model.named_buffers():
+        print(f"Buffer {name} is on device: {buffer.device}")
+
+    for i, param in enumerate(params_list):
+      print(f"Parameter {i} is on device: {param.device}")
+
+
+  # loss_fn.to(device)
+  # current_model.to(device)
+  if print_bool:
+    print("GPU alloc before GGN: ")
+    print_gpu_memory()
+
+  ggn_start_time = time.time()
 
   GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
+
+  GGN_time = time.time() - ggn_start_time
+  timings.append(('GGN compute time', GGN_time))
+
+  if print_bool:
+    print("GPU alloc after GGN: ")
+    print_gpu_memory()
+
+  del Data
+  del params_list
+  torch.cuda.empty_cache()
 
   # GGN = GGNLinearOperator(current_model, loss_fn, params_list, Data)
   if global_step % p == 0:
     print("Done with GGN")  # debugging
+    
 
 # forrward pass through model_fn
   logits_batch, new_model_state = workload.model_fn(
@@ -375,7 +443,9 @@ def update_params(workload: spec.Workload,
 
   loss.backward()
   
-  gradients = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None)
+  alpha_comp_time_start = time.time()
+
+  gradients = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None).cpu()
   gradients_norm = torch.norm(gradients, 2)
 
   if print_bool:
@@ -386,11 +456,14 @@ def update_params(workload: spec.Workload,
     torch.nn.utils.clip_grad_norm_(
         current_model.parameters(), max_norm=grad_clip)
   
+  excluded_start_time_alpha = time.time()
 
   optimizer_state['optimizer'].step()
   optimizer_state['scheduler'].step()
+
+  excluded_time_alpha = time.time() - excluded_start_time_alpha
   
-  theta_1 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad])  
+  theta_1 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad]).cpu()  
   if print_bool:
     print("first 10 elements of theta_1: ", theta_1[:10])  # debugging 
     print("Theta_1 lenght:", len(theta_1))  # debugging
@@ -403,31 +476,43 @@ def update_params(workload: spec.Workload,
     print("Norm of d_normalized: ", torch.norm(d_normalized).item()) # debugging
 
   if print_bool:
-    print("Done with d_unnormalized")  # debugging
-    print("first 10 elements of d_unnormalized: ", d_unnormalized[:10])  # debugging
-    # Ensure d_unnormalized is a list or a sequence
-    d_unnormalized_list = list(d_unnormalized)
-    # Select ten random elements
-    random_elements = random.sample(d_unnormalized_list, 10)
-    # Print the random elements
-    print("Ten random elements of d_unnormalized: ", random_elements)  # debugging
-    print("d_unnormalized lenght:", len(d_unnormalized))  # debugging
+    # Compute the starting index based on the formula
+    start_index = len(d_unnormalized) // 2 + 3 * global_step
+    
+    # Ensure the start_index does not go out of bounds
+    start_index = min(start_index, len(d_unnormalized) - 10)  # Make sure there are enough elements left
+    
+    # Print 10 consecutive elements starting from the computed index
+    consecutive_elements = d_unnormalized[start_index:start_index + 10]
+    
+    # Print the 10 consecutive elements (move to CPU if needed)
+    print(f"Consecutive elements from index {start_index}: {consecutive_elements.cpu().numpy()}")  # debugging
+    print(f"d_unnormalized length: {len(d_unnormalized)}")  # debugging
+
 
   GGNd = GGN @ d_unnormalized.detach().cpu().numpy()
   GGNd_normalized = GGN @ d_normalized.detach().cpu().numpy()
 
   if print_bool:
     print("Done with GGNd")  # debugging
-  GGNd_tensor = torch.tensor(GGNd, device='cuda') # from_numpy()
-  GGNd_normalized_tensor = torch.tensor(GGNd_normalized, device='cuda') # from_numpy()
+  # Ensure all tensors are created on the CPU
+  GGNd_tensor = torch.tensor(GGNd, device='cpu')  # Move to CPU
+  GGNd_normalized_tensor = torch.tensor(GGNd_normalized, device='cpu')  # Move to CPU
 
-  #if print_bool:
-    #print("Done with GGNd_tensor")  # debugging
-    #print("device of GGNd_tensor: ", GGNd_tensor.device)  # debugging
-    #print("device of d_unnormalized: ", d_unnormalized.device)  # debugging
+  # Ensure that d_unnormalized and d_normalized are also on CPU
+  d_unnormalized = d_unnormalized.to('cpu')  # Move to CPU if necessary
+  d_normalized = d_normalized.to('cpu')  # Move to CPU if necessary
 
+  # Perform dot products on CPU
   dGGNd = torch.dot(GGNd_tensor, d_unnormalized)
   dGGNd_normalized = torch.dot(GGNd_normalized_tensor, d_normalized)
+
+  # Optional: If you need to print or debug
+  #if print_bool:
+  #    print("Done with GGNd_tensor")  # debugging
+  #    print("device of GGNd_tensor: ", GGNd_tensor.device)  # debugging
+  #    print("device of d_unnormalized: ", d_unnormalized.device)  # debugging
+
 
   if print_bool:
     print("Done with dGGNd")  # debugging      
@@ -439,6 +524,9 @@ def update_params(workload: spec.Workload,
 
   alpha_star = dg / dGGNd
   alpha_star_normalized = dg_normalized / dGGNd_normalized
+
+  alpha_comp_time = time.time() - alpha_comp_time_start - excluded_time_alpha
+  timings.append(('alpha computations time', alpha_comp_time))
 
   if print_bool:
     print("dg(Zaehler): ", dg.item())  # debugging   
@@ -455,13 +543,13 @@ def update_params(workload: spec.Workload,
 
 
 
-  alpha_log_dir = "/home/suckrowd/Documents/experiments_algoPerf/mnist111224"
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo0412_dbsb8_noEval")
 
   # Ensure the directory exists
-  os.makedirs(alpha_log_dir, exist_ok=True)
+  os.makedirs(log_dir, exist_ok=True)
 
   # Construct the full path to the log file
-  log_file_path = os.path.join(alpha_log_dir, 'alpha_star_log.csv')
+  log_file_path = os.path.join(log_dir, 'alpha_star_log.csv')
 
   log_data = [global_step, alpha_star.item(), dg.item(), dGGNd.item(), d_unnormalized_norm.item(), gradients_norm.item(),
    alpha_star_normalized.item(), dg_normalized.item(), dGGNd_normalized.item(), current_lr]
@@ -480,7 +568,10 @@ def update_params(workload: spec.Workload,
       writer = csv.writer(log_file)
       writer.writerow(log_data)
   
-  
+  # remove variables to free (cpu) memory
+  del alpha_star, dg, dGGNd, d_unnormalized_norm, gradients_norm, alpha_star_normalized, dg_normalized, dGGNd_normalized
+
+
   
 
   # Log training metrics - loss, grad_norm, batch_size.
@@ -500,15 +591,50 @@ def update_params(workload: spec.Workload,
                  loss.item(),
                  grad_norm.item())
 
+  total_time = time.time() - start_time
+  timings.append(('total time', total_time))
+
+  total_alpha_time = total_time - alpha_comp_time - GGN_prep_time - GGN_time
+  timings.append(('total alpha-related time', total_alpha_time))
+
+  total_non_alpha_time = total_time - total_alpha_time
+  timings.append(('total non-alpha time', total_non_alpha_time))
+  
+  # Log the timings
+  time_log_dir = log_dir
+  os.makedirs(time_log_dir, exist_ok=True)
+
+  timings_csv_path = os.path.join(time_log_dir, 'timings.csv')
+
+  # Generate the header dynamically
+  header = ['Global Step'] + [timing[0] for timing in timings]
+
+  # Check if the file exists and write a header if needed
+  try:
+      with open(timings_csv_path, 'x', newline='') as csvfile:  # Open in exclusive creation mode
+          csvwriter = csv.writer(csvfile)
+          csvwriter.writerow(header)  # Write header
+  except FileExistsError:
+      pass  # File already exists, no need to write the header
+
+  # Append the timings data
+  with open(timings_csv_path, 'a', newline='') as csvfile:
+      csvwriter = csv.writer(csvfile)
+      row = [global_step] + [timing[1] for timing in timings]
+      csvwriter.writerow(row)    
+
+  timings.clear()
+
   return (optimizer_state, current_param_container, new_model_state)
 
 
 def get_batch_size(workload_name):
-  # Return the global batch size.
+  # Return the global batch size. 
+  # divide by eight as only one instead of four a100 will be used
   if workload_name == 'criteo1tb':
-    return 262_144
+    return int(262_144/8)            
   elif workload_name == 'fastmri':
-    return 32
+    return int(32/8)
   elif workload_name == 'imagenet_resnet':
     return 1024
   elif workload_name == 'imagenet_resnet_silu':
