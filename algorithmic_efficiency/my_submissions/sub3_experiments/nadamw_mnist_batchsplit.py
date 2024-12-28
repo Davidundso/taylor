@@ -18,6 +18,7 @@ from algorithmic_efficiency.pytorch_utils import pytorch_setup
 from torch.nn.utils import parameters_to_vector, vector_to_parameters
 from curvlinops import GGNLinearOperator
 import torch.nn as nn
+import csv
 
 USE_PYTORCH_DDP = pytorch_setup()[0]
 
@@ -419,31 +420,33 @@ def update_params(workload: spec.Workload,
 
   d_unnormalized_b2 = d_unnormalized_b2.to('cpu')  # Move to CPU if necessary
 
-  # Compute alpha using gradients and d_unnormalized from batch 2 and ggn from batch 1
+  # Compute alpha using d_unnormalized from batch 2 and ggn and gradient from batch 1
   GGNd1 = GGN_b1 @ d_unnormalized_b2.cpu().numpy()
   GGNd1_tensor = torch.tensor(GGNd1, device='cpu')
 
   dGGNd_1 = torch.dot(GGNd1_tensor, d_unnormalized_b2)
 
-  dg_b2 = - torch.dot(gradients_b2, d_unnormalized_b2)  # numerator: - d^T*g
+  dg1 = - torch.dot(gradients_b1, d_unnormalized_b2)  # numerator: - d^T*g
 
-  alpha_star1 = dg_b2 / dGGNd_1
+  alpha_star1 = dg1 / dGGNd_1
 
-  # Compute alpha using gradients and d_unnormalized from batch 1 and ggn from batch 2
+  # Compute alpha using d_unnormalized from batch 1 and ggn and gradients from batch 2
   GGNd2 = GGN_b2 @ d_unnormalized_b1.cpu().numpy()
   GGNd2_tensor = torch.tensor(GGNd2, device='cpu')
 
   dGGNd_2 = torch.dot(GGNd2_tensor, d_unnormalized_b1)
 
-  dg_b1 = - torch.dot(gradients_b1, d_unnormalized_b1)  # numerator: - d^T*g
+  dg2 = - torch.dot(gradients_b2, d_unnormalized_b1)  # numerator: - d^T*g
 
-  alpha_star2 = dg_b1 / dGGNd_2
+  alpha_star2 = dg2 / dGGNd_2
 
   # compute alpha using only batch 1
   GGNd_b1 = GGN_b1 @ d_unnormalized_b1.cpu().numpy()
   GGNd_b1_tensor = torch.tensor(GGNd_b1, device='cpu')
 
   dGGNd_b1 = torch.dot(GGNd_b1_tensor, d_unnormalized_b1)
+
+  dg_b1 = - torch.dot(gradients_b1, d_unnormalized_b1)  # numerator: - d^T*g
 
   alpha_star_b1 = dg_b1 / dGGNd_b1
 
@@ -452,6 +455,8 @@ def update_params(workload: spec.Workload,
   GGNd_b2_tensor = torch.tensor(GGNd_b2, device='cpu')
 
   dGGNd_b2 = torch.dot(GGNd_b2_tensor, d_unnormalized_b2)
+
+  dg_b2 = - torch.dot(gradients_b2, d_unnormalized_b2)  # numerator: - d^T*g
 
   alpha_star_b2 = dg_b2 / dGGNd_b2
 
@@ -476,6 +481,33 @@ def update_params(workload: spec.Workload,
   # print the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 in one line
   if print_bool:
     print(f'alpha_star1: {alpha_star1}, alpha_star2: {alpha_star2}, alpha_star_b1: {alpha_star_b1}, alpha_star_b2: {alpha_star_b2}')
+
+
+  current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
+  # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
+  log_dir = os.path.expandvars("/home/suckrowd/Documents/experiments_algoPerf/mnist281224_2")
+
+  # Ensure the directory exists
+  os.makedirs(log_dir, exist_ok=True)
+
+  # Construct the full path to the log file
+  log_file_path = os.path.join(log_dir, 'alpha_star_log.csv')
+
+  log_data = [global_step, alpha_star1.item(), alpha_star2.item(), alpha_star_b1.item(), alpha_star_b2.item(), current_lr]
+
+  # Check if the file exists and write a header if needed
+  try:
+      with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
+          writer = csv.writer(log_file)
+          writer.writerow(["Global step / 2", "alpha1(GGN B1)", "alpha2(GGN B2)", "alpha B1", "alpha B2", "Learning rate"
+                           ])  # Write header
+  except FileExistsError:
+      pass  # File already exists, no need to write the header
+
+  # Append the log data
+  with open(log_file_path, 'a') as log_file:
+      writer = csv.writer(log_file)
+      writer.writerow(log_data)
   
 
 
