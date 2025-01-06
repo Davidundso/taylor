@@ -260,8 +260,14 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
+  start_step_computing_alpha = 2000  # start computing alpha after 2000 steps
+
+  intervall_alpha = 1000 # compute alpha every 1000 steps
+
+  num_alphas = 50 # compute 50 alphas
+
   # each 500 steps pass to alpha for 50 steps
-  if global_step % 500 >= 50 or global_step < 500:
+  if global_step % intervall_alpha >= num_alphas or global_step < start_step_computing_alpha:
     hyperparameters = HPARAMS
 
     # only use half of the batch
@@ -314,7 +320,7 @@ def update_params(workload: spec.Workload,
           current_model.parameters(), max_norm=grad_clip)
     optimizer_state['optimizer'].step()
 
-    if global_step < 500:                                           # only us lr scheduler for the first 500 steps
+    if global_step < start_step_computing_alpha:                                           # only us lr scheduler for the first 500 steps
       optimizer_state['scheduler'].step()
 
     # Log training metrics - loss, grad_norm, batch_size.
@@ -458,13 +464,17 @@ def update_params(workload: spec.Workload,
   vector_to_parameters(theta_0_b1, [param for param in current_model.parameters() if param.requires_grad])
 
   # check if it worked
-  if global_step <= 100 or global_step % 500 == 0:
+  if global_step <= 100 or global_step % intervall_alpha == 0:
     theta_0_b1_check = parameters_to_vector([param.detach().clone() for param in current_model.parameters() if param.requires_grad]).cpu()
     if torch.norm(theta_0_b1 - theta_0_b1_check, 2) > 1e-6:
       print('Error: The parameters were not set back to the values before the step')
       print(f'Norm of difference: {torch.norm(theta_0_b1 - theta_0_b1_check, 2)}')
       print('Exiting...')
       exit()
+    else:
+      print('Parameters set back to the values before the step')
+
+  
 
   # set the optimizer state to the state before the step
   optimizer_state['optimizer'].load_state_dict(optimizer_state_before)
@@ -482,7 +492,7 @@ def update_params(workload: spec.Workload,
   if global_step == 1:
     print(optimizer_state_before)
 
-  if global_step <= 100 or global_step % 500 == 0:
+  if global_step <= 100 or global_step % intervall_alpha == 0:
     # Compare the optimizer state before and after restoring
     state_restored = True
     for param_group_before, param_group_after in zip(optimizer_state_before['param_groups'], optimizer_state_after['param_groups']):
@@ -506,7 +516,7 @@ def update_params(workload: spec.Workload,
             break
         
     # Print the old and new optimizer state at step 500
-    if global_step == 500 or global_step == 1000:
+    if global_step == start_step_computing_alpha or global_step == 2*start_step_computing_alpha:
         print("Optimizer state before:")
         for i, param_group in enumerate(optimizer_state_before['param_groups']):
             print(f"Parameter group {i}:")
@@ -586,7 +596,7 @@ def update_params(workload: spec.Workload,
   optimizer_state['optimizer'].step()
 
   # step the scheduler only for the first 50 alphas (global step 500-549)
-  if global_step < 550:
+  if global_step < (start_step_computing_alpha + num_alphas):
     optimizer_state['scheduler'].step()
 
   theta_1_b2 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad]).cpu()  
