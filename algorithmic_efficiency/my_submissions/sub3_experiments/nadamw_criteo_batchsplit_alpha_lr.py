@@ -405,7 +405,7 @@ def update_params(workload: spec.Workload,
   # First half
   optimizer_state['optimizer'].zero_grad()
 
-  Data_b1 = [(inputs1.to(device), targets1.to(device))] # remove 'view(-1, 1)' for mnist
+  Data_b1 = [(inputs1.to(device), targets1.view(-1,1).to(device))] # remove 'view(-1, 1)' for mnist
 
 
   GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1)
@@ -809,7 +809,7 @@ def update_params(workload: spec.Workload,
 def get_batch_size(workload_name):
   # Return the global batch size.
   if workload_name == 'criteo1tb':
-    return 262_144
+    return int(262_144 / 8 * 2)                    # divide by 8 because using only 1 instead of 8 gpus, double the batch size for the two halves 
   elif workload_name == 'fastmri':
     return 32
   elif workload_name == 'imagenet_resnet':
