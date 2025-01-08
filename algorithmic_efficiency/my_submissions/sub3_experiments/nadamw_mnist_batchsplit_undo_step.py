@@ -87,6 +87,7 @@ class NAdamW(torch.optim.Optimizer):
     if not step_is_tensor:
       for s in state_values:
         s['step'] = torch.tensor(float(s['step']))
+  
 
   @torch.no_grad()
   def step(self, closure=None):
@@ -294,10 +295,22 @@ def update_params(workload: spec.Workload,
 
   current_model = current_param_container
 
+  # check learning rate
+  lr_before_step = optimizer_state['optimizer'].param_groups[0]['lr']
+
+
+  # copy the model state dict
+  if model_state is not None:
+    model_state_before = current_model.state_dict()
+  else:
+    model_state_before = None
+  
   params_list = [param for param in current_model.parameters() if param.requires_grad] # save params before step
   theta_0_b1 = parameters_to_vector([param.detach().clone() for param in params_list]).cpu() # convert to vector
 
   optimizer_state_before = optimizer_state['optimizer'].state_dict()
+
+  
 
   # boolean for printing
   p = 50
@@ -312,10 +325,25 @@ def update_params(workload: spec.Workload,
   batch_size = inputs.size(0)
   half_batch_size = batch_size // 2
 
-  inputs1, inputs2 = inputs[:half_batch_size], inputs[half_batch_size:]
-  targets1, targets2 = targets[:half_batch_size], targets[half_batch_size:]
-  weights1 = weights[:half_batch_size] if weights is not None else None
-  weights2 = weights[half_batch_size:] if weights is not None else None
+  # mix the batches by assigning every even index to the first half and every odd index to the second half
+
+  inputs2 = inputs[::2]
+  targets2 = targets[::2]
+  weights2 = weights[::2] if weights is not None else None
+
+  inputs1 = inputs[1::2]
+  targets1 = targets[1::2]
+  weights1 = weights[1::2] if weights is not None else None
+
+  # debugging: set batch 2 as batch 1
+  inputs1 = inputs2
+  targets1 = targets2
+  weights1 = weights2
+
+  #inputs1, inputs2 = inputs[:half_batch_size], inputs[half_batch_size:]
+  #targets1, targets2 = targets[:half_batch_size], targets[half_batch_size:]
+  #weights1 = weights[:half_batch_size] if weights is not None else None
+  #weights2 = weights[half_batch_size:] if weights is not None else None
 
   # First half
   optimizer_state['optimizer'].zero_grad()
@@ -331,7 +359,7 @@ def update_params(workload: spec.Workload,
       model_state=model_state,
       mode=spec.ForwardPassMode.TRAIN,
       rng=rng,
-      update_batch_norm=True)
+      update_batch_norm=False)
 
   label_smoothing = (
       hyperparameters.label_smoothing if hasattr(hyperparameters,
@@ -345,11 +373,14 @@ def update_params(workload: spec.Workload,
       label_smoothing=label_smoothing)
   summed_loss1 = loss_dict1['summed']
   n_valid_examples1 = loss_dict1['n_valid_examples']
-  if USE_PYTORCH_DDP:
+  if False:
     summed_loss1 = dist_nn.all_reduce(summed_loss1)
     n_valid_examples1 = dist_nn.all_reduce(n_valid_examples1)
   loss1 = summed_loss1 / n_valid_examples1
   loss1.backward()
+
+  # debug:P print loss 1
+  print(f'Loss 1: {loss1}')
 
   gradients_b1 = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None).cpu()
   gradients_norm_b1 = torch.norm(gradients_b1, 2)
@@ -383,6 +414,8 @@ def update_params(workload: spec.Workload,
   # set the optimizer state to the state before the step
   optimizer_state['optimizer'].load_state_dict(optimizer_state_before)
 
+ 
+
   # move to the same device as the model
   for state in optimizer_state['optimizer'].state.values():
     for k, v in state.items():
@@ -391,6 +424,11 @@ def update_params(workload: spec.Workload,
   
   # check if resoring the optimizer state worked
   optimizer_state_after = optimizer_state['optimizer'].state_dict()
+
+  # restore model state to the state before the step with model state dict
+  if model_state_before is not None:
+    current_model.load_state_dict(model_state_before)
+
 
   if global_step <= 100 or global_step % 500 == 0:
     # Compare the optimizer state before and after restoring
@@ -423,7 +461,42 @@ def update_params(workload: spec.Workload,
   # make sure everything is on the same device
   current_model.to('cuda:0')
 
+  # debug: do anoher forward pass to check if the model is the same as before
+  '''
+  logits_batch1_check, new_model_state1_check = workload.model_fn(
+      params=current_model,
+      augmented_and_preprocessed_input_batch={'inputs': inputs1, 'targets': targets1},
+      model_state=model_state,
+      mode=spec.ForwardPassMode.TRAIN,
+      rng=rng,
+      update_batch_norm=False)
+  
+  # compute loss too
+  loss_dict1_check = workload.loss_fn(
+      label_batch=targets1,
+      logits_batch=logits_batch1_check,
+      mask_batch=weights1,
+      label_smoothing=label_smoothing)
+  summed_loss1_check = loss_dict1_check['summed']
+  n_valid_examples1_check = loss_dict1_check['n_valid_examples']
+  if False:
+    summed_loss1_check = dist_nn.all_reduce(summed_loss1_check)
+    n_valid_examples1_check = dist_nn.all_reduce(n_valid_examples1_check)
+  loss1_check = summed_loss1_check / n_valid_examples1_check
+
+  print(f'Loss 1 check: {loss1_check}')
+  '''
   # Moving to the second half
+
+  # check and compare learning rate
+  lr_after_step = optimizer_state['optimizer'].param_groups[0]['lr']
+  if lr_before_step != lr_after_step:
+    print(f'Error: Learning rate was changed during the step. Before: {lr_before_step}, After: {lr_after_step}')
+    print('Exiting...')
+    #exit()
+
+  # zero the gradients
+  optimizer_state['optimizer'].zero_grad()
 
   params_list = [param for param in current_model.parameters() if param.requires_grad] # save params before step
   theta_0_b2 = parameters_to_vector([param.detach().clone() for param in params_list]).cpu() # convert to vector
@@ -464,7 +537,7 @@ def update_params(workload: spec.Workload,
       label_smoothing=label_smoothing)
   summed_loss2 = loss_dict2['summed']
   n_valid_examples2 = loss_dict2['n_valid_examples']
-  if USE_PYTORCH_DDP:
+  if False:
     summed_loss2 = dist_nn.all_reduce(summed_loss2)
     n_valid_examples2 = dist_nn.all_reduce(n_valid_examples2)
   loss2 = summed_loss2 / n_valid_examples2
@@ -479,6 +552,12 @@ def update_params(workload: spec.Workload,
 
   # Update the parameters after the second half
   optimizer_state['optimizer'].step()
+  #check the learning rate again
+  lr_after_step = optimizer_state['optimizer'].param_groups[0]['lr']
+  if lr_before_step != lr_after_step:
+    print(f'Error: Learning rate was changed during the step. Before: {lr_before_step}, After: {lr_after_step}')
+    print('Exiting...')
+    #exit()
   optimizer_state['scheduler'].step()
 
   theta_1_b2 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad]).cpu()  
@@ -552,7 +631,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("/home/suckrowd/Documents/experiments_algoPerf/mnist040125_4")
+  log_dir = os.path.expandvars("/home/suckrowd/Documents/experiments_algoPerf/mnist070125_shuffled_no_batchn_update_restore_model_state3")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)
