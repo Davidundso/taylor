@@ -260,7 +260,7 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
-  num_consec_alphas = 25
+  num_consec_alphas = 16
   comp_alphas_each = 1000
 
 
@@ -301,7 +301,7 @@ def update_params(workload: spec.Workload,
     loss_dict = workload.loss_fn(
         label_batch=batch['targets'],
         logits_batch=logits_batch,
-        mask_batch=batch.get('weights'),
+        # mask_batch=batch.get('weights'),
         label_smoothing=label_smoothing)
     summed_loss = loss_dict['summed']
     n_valid_examples = loss_dict['n_valid_examples']
@@ -420,7 +420,7 @@ def update_params(workload: spec.Workload,
 
   # REMOVE
   outputs_check = current_model(inputs1)
-  loss_check = loss_fn(outputs_check, targets1)
+  loss_check = loss_fn(outputs_check, targets1.view(-1,1))
   
 
 
@@ -507,7 +507,7 @@ def update_params(workload: spec.Workload,
   loss_dict2 = workload.loss_fn(
       label_batch=targets2,
       logits_batch=logits_batch2,
-      # mask_batch=weights2,
+      # mask_batch=weights2, removed. cannot be passed to GGN
       label_smoothing=label_smoothing)
   summed_loss2 = loss_dict2['summed']
   n_valid_examples2 = loss_dict2['n_valid_examples']
@@ -586,7 +586,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("/home/suckrowd/Documents/experiments/exp02a_1501_mnist")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/test_template")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)
