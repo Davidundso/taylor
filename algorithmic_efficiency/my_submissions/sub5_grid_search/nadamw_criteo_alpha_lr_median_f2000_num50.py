@@ -579,7 +579,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("$WORK/cluster_experiments/NAME")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/f2000_num50")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)
@@ -704,15 +704,16 @@ def update_params(workload: spec.Workload,
 
     alpha_values = []                     # back to zero for the next 50 alphas
 
-    for i, param_group in enumerate(optimizer_state['optimizer'].param_groups):
-        # Print the current learning rate before changing
-        print(f"Before change - Parameter group {i}: lr = {param_group['lr']}")
-        
-        # Change the learning rate
-        param_group['lr'] = median_alpha_star1.item()
+    if median_alpha_star1.item() > 0:
+      for i, param_group in enumerate(optimizer_state['optimizer'].param_groups):
+          # Print the current learning rate before changing
+          print(f"Before change - Parameter group {i}: lr = {param_group['lr']}")
+          
+          # Change the learning rate
+          param_group['lr'] = median_alpha_star1.item()
 
-        # Print the new learning rate after changing
-        print(f"After change - Parameter group {i}: lr = {param_group['lr']}")
+          # Print the new learning rate after changing
+          print(f"After change - Parameter group {i}: lr = {param_group['lr']}")
 
 
 
