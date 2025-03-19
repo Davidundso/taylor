@@ -260,8 +260,8 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
-  num_consec_alphas = 50
-  comp_alphas_each = 1000
+  num_consec_alphas = 25
+  comp_alphas_each = 2000
 
 
   # do a normal step for most steps (using one half of the batch)
@@ -317,7 +317,7 @@ def update_params(workload: spec.Workload,
       torch.nn.utils.clip_grad_norm_(
           current_model.parameters(), max_norm=grad_clip)
     optimizer_state['optimizer'].step()
-    if global_step < 2000 + num_consec_alphas:
+    if global_step < comp_alphas_each + num_consec_alphas:
       optimizer_state['scheduler'].step()
 
     # Log training metrics - loss, grad_norm, batch_size.
@@ -579,7 +579,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("$WORK/cluster_experiments/f1000_num50")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/new")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)
@@ -690,14 +690,14 @@ def update_params(workload: spec.Workload,
   # declare global variable for average of alpha*lr
   global alpha_values
   
-  if global_step % comp_alphas_each == 0 or global_step == 53001:
+  if global_step % comp_alphas_each == 0:
     alpha_values = []
 
   # sum alpha values scaled by the learning rate
-  alpha_values.append(alpha_star1 * current_lr)  # Store as tensors directly
+  alpha_values.append(alpha_star_b2 * current_lr)  # Now using biased alpha
 
   # after 50 alphas were added, calculate the average and print it
-  if global_step % comp_alphas_each == num_consec_alphas - 1 and global_step > comp_alphas_each:
+  if global_step % num_consec_alphas == num_consec_alphas - 1 and global_step > comp_alphas_each:
     tensor_alpha_values = torch.stack(alpha_values)  # Convert list of tensors to a single tensor
     # Compute median using quantile with midpoint interpolation
     median_alpha_star1 = torch.quantile(tensor_alpha_values, 0.5, interpolation='midpoint')  

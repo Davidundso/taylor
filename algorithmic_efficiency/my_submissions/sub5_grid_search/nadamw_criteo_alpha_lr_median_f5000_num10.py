@@ -268,7 +268,7 @@ def update_params(workload: spec.Workload,
 
 
   # do a normal step for most steps (using one half of the batch)
-  if (global_step < num_consec_alphas) or (adjusted_step % comp_alphas_each >= num_consec_alphas):
+  if (global_step < initial_step) or ((adjusted_step % comp_alphas_each >= num_consec_alphas) and (global_step > 2000)):
     hyperparameters = HPARAMS
 
     # only use half of the batch
@@ -582,7 +582,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("$WORK/cluster_experiments/f5000_num10")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/time_f5000_num10")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)
@@ -693,14 +693,14 @@ def update_params(workload: spec.Workload,
   # declare global variable for average of alpha*lr
   global alpha_values
   
-  if adjusted_step % comp_alphas_each == 0:
+  if (adjusted_step % comp_alphas_each == 0) or (global_step == 0):
     alpha_values = []
 
   # sum alpha values scaled by the learning rate
   alpha_values.append(alpha_star1 * current_lr)  # Store as tensors directly
 
   # after num consec alphas were computed, compute the median and change the learning rate
-  if adjusted_step % comp_alphas_each == num_consec_alphas - 1 and global_step > comp_alphas_each:
+  if (adjusted_step % comp_alphas_each == num_consec_alphas - 1 and global_step > comp_alphas_each) or global_step == 2009:
     tensor_alpha_values = torch.stack(alpha_values)  # Convert list of tensors to a single tensor
     # Compute median using quantile with midpoint interpolation
     median_alpha_star1 = torch.quantile(tensor_alpha_values, 0.5, interpolation='midpoint')  
