@@ -5,6 +5,7 @@ This repository will be used for my bachelor thesis: Aiming to improve line sear
 channels:
   - bioconda
   - conda-forge
+    
 dependencies:
   - _libgcc_mutex=0.1
   - _openmp_mutex=4.5
