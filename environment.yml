@@ -1,4 +1,4 @@
-name: /mnt/qb/work/hennig/hmx272/.conda/algo2
+name: taylor
 channels:
   - bioconda
   - conda-forge
@@ -169,5 +169,5 @@ dependencies:
     - werkzeug==3.0.6
     - wrapt==1.14.1
     - zipp==3.20.2
-prefix: /mnt/qb/work/hennig/hmx272/.conda/algo2
+prefix: taylor
 
