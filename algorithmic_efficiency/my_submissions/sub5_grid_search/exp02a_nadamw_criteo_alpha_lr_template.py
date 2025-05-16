@@ -418,9 +418,7 @@ def update_params(workload: spec.Workload,
 
   GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1)
 
-  # REMOVE
-  outputs_check = current_model(inputs1)
-  loss_check = loss_fn(outputs_check, targets1.view(-1,1))
+
   
 
 
@@ -449,11 +447,6 @@ def update_params(workload: spec.Workload,
     n_valid_examples1 = dist_nn.all_reduce(n_valid_examples1)
   loss1 = summed_loss1 / n_valid_examples1
 
-  # REMOVE
-  if True:  # print the values of the loss and the loss_check
-      print(f'Loss: {loss1.item()}, Loss_check: {loss_check.item()}, '
-            f'Difference: {loss1.item() - loss_check.item()}, '
-            f'Larger 1e-6: {abs(loss1.item() - loss_check.item()) > 1e-6}')
 
 
   loss1.backward()
@@ -586,7 +579,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("$WORK/cluster_experiments/test_template")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/NAME")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)
@@ -716,7 +709,7 @@ def update_params(workload: spec.Workload,
         print(f"Before change - Parameter group {i}: lr = {param_group['lr']}")
         
         # Change the learning rate
-        param_group['lr'] = median_alpha_star1
+        param_group['lr'] = median_alpha_star1.item()
 
         # Print the new learning rate after changing
         print(f"After change - Parameter group {i}: lr = {param_group['lr']}")

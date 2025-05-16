@@ -97,7 +97,7 @@ class BaseCriteo1TbDlrmSmallWorkload(spec.Workload):
 
   @property
   def eval_period_time_sec(self) -> int:
-    return 2 * 60  # 2 mins.
+    return 2 * 60 * 8  # 2 mins.  # EDITED BY DAVID: 8 times less GPU power -> 8 times longer
 
   def _build_input_queue(
       self,
