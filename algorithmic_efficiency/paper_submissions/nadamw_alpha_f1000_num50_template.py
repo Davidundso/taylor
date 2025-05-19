@@ -266,11 +266,12 @@ def update_params(workload: spec.Workload,
   num_consec_alphas = 50
   comp_alphas_each = 1000
   use_aplha = False                  # if you want to use alpha as learning rate (median)
-  timing = False
+  timing = True
+  comp_alpha_early = True
 
 
   # do a normal step for most steps (using one half of the batch)
-  if global_step % comp_alphas_each >= num_consec_alphas or global_step < 2000:
+  if (global_step % comp_alphas_each >= num_consec_alphas or global_step < 2000) and not (comp_alpha_early and global_step > 3):
     if timing:
       start_time_normal = time.time()
     
@@ -283,7 +284,7 @@ def update_params(workload: spec.Workload,
     batch = {
         'inputs': batch['inputs'][:half_batch_size],
         'targets': batch['targets'][:half_batch_size],
-        'weights': batch.get('weights')[:half_batch_size],
+        #'weights': batch.get('weights')[:half_batch_size],
     }
 
     current_model = current_param_container
@@ -347,6 +348,7 @@ def update_params(workload: spec.Workload,
     if timing:
       step_time_normal = time.time() - start_time_normal
       print(f'Normal step time: {step_time_normal} seconds')
+
     return (optimizer_state, current_param_container, new_model_state)
   
   # for num_consec_alphas of comp_alpha_each steps caclulate 
@@ -405,14 +407,15 @@ def update_params(workload: spec.Workload,
   # Split the batch into two halves
   inputs = batch['inputs']
   targets = batch['targets']
-  weights = batch.get('weights')
+
+
   batch_size = inputs.size(0)
   half_batch_size = batch_size // 2
 
   inputs1, inputs2 = inputs[:half_batch_size], inputs[half_batch_size:]
   targets1, targets2 = targets[:half_batch_size], targets[half_batch_size:]
-  weights1 = weights[:half_batch_size] if weights is not None else None
-  weights2 = weights[half_batch_size:] if weights is not None else None
+  #weights1 = weights[:half_batch_size] if weights is not None else None
+  #weights2 = weights[half_batch_size:] if weights is not None else None
 
   # debugging: set inputs1 = inputs2, targets1 = targets2, weights1 = weights2
   #inputs1 = inputs2
@@ -436,7 +439,7 @@ def update_params(workload: spec.Workload,
 
   if timing:
     step_time_ggn = time.time() - start_time_ggn
-    print(f'GGN computation time: {step_time_ggn} seconds')
+    print(f' first GGN computation time: {step_time_ggn} seconds')
 
   
 
@@ -500,8 +503,14 @@ def update_params(workload: spec.Workload,
   # compute ggn
   Data_b2 = [(inputs2.to(device), targets2.view(-1,1).to(device))] # remove 'view(-1, 1)' for mnist
 
+  if timing:
+    start_time_ggn2 = time.time()
+
   GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
 
+  if timing:
+    step_time_ggn2 = time.time() - start_time_ggn2
+    print(f' second GGN computation time: {step_time_ggn2} seconds')
 
   logits_batch2, new_model_state2 = workload.model_fn(
       params=current_model,
@@ -570,7 +579,9 @@ def update_params(workload: spec.Workload,
 
   if timing:
     step_time_alpha = time.time() - start_time_alpha
-    print(f'Alpha computation time: {step_time_alpha} seconds')
+    print(f'Full alpha-step computation time: {step_time_alpha} seconds')
+    step_time_no_ggn = step_time_alpha - step_time_ggn - step_time_ggn2
+    print(f'Alpha step time without GGN time: {step_time_no_ggn} seconds')
 
   # compare the gradients
   if print_bool:
@@ -602,7 +613,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("$WORK/cluster_experiments/f1000_num50")
+  log_dir = os.path.expandvars("$WORK/paper_experiments/test1_imagenet") # change to your log dir
   
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)
