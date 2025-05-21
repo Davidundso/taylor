@@ -188,3 +188,10 @@ cython_debug/
 
 *.csv
 *.sh
+
+# eval files only needed on cluster
+# Ignore all eval files
+submission_runner_stepbased_eval*.py
+submission_runner_timebased_eval*.py
+
+
