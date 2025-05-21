@@ -35,9 +35,10 @@ python3 submission_runner_stepbased_eval.py \
     --data_dir=/mnt/lustre/datasets/mlcommons/criteo1tb \
     --tuning_ruleset=self \
     --experiment_dir=$WORK/cluster_experiments \
-    --experiment_name=criteo_stepb_eval0512 \
+    --experiment_name=criteo_dbsb8_stepb_eval0512 \
     --submission_path=my_submissions/sub2/sub2_criteo_debugged_timing.py \
     --torch_compile=False \
-    --max_global_steps=10000
+    --max_global_steps=14000 \
+    --resume_last_run=True
 
 conda deactivate

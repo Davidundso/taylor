@@ -334,7 +334,7 @@ def update_params(workload: spec.Workload,
 
     return (optimizer_state, current_param_container, new_model_state)
   
-  # for 100 of 1000 steps caclulate alpha debiased and biased using both halves of the batch
+  # for 50 of 1000 steps caclulate alpha debiased and biased using both halves of the batch
 
     # create torch loss function from workload loss type for GGN computation
   def get_loss_function(loss_type):
@@ -395,6 +395,14 @@ def update_params(workload: spec.Workload,
   batch_size = inputs.size(0)
   half_batch_size = batch_size // 2
 
+  # shuffle
+
+  indices = torch.randperm(batch_size)
+  inputs = inputs[indices]
+  targets = targets[indices]
+  if weights is not None:
+    weights = weights[indices]
+  
   inputs1, inputs2 = inputs[:half_batch_size], inputs[half_batch_size:]
   targets1, targets2 = targets[:half_batch_size], targets[half_batch_size:]
   weights1 = weights[:half_batch_size] if weights is not None else None
@@ -616,7 +624,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("/home/suckrowd/Documents/experiments_algoPerf/mnist040125_4")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo_debiased_alpha_each_1000_070125")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)

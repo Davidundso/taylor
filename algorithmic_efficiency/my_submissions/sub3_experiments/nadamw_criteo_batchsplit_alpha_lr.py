@@ -670,7 +670,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("/home/suckrowd/Documents/experiments_algoPerf/mnist060125_alpha_as_lr")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo_debiased_alpha_lr070125")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)
@@ -782,16 +782,16 @@ def update_params(workload: spec.Workload,
 
   # declare global variable for average of alpha*lr
   global summed_alpha_star1
-  
-  if global_step == 500:
+
+  if global_step == start_step_computing_alpha:
     summed_alpha_star1 = 0
 
   # sum alpha values scaled by the learning rate
   summed_alpha_star1 += alpha_star1.item()*current_lr
 
   # after 50 alphas were added, calculate the average and print it
-  if global_step % 50 == 49:
-    averaged_alpha_star1 = summed_alpha_star1/50
+  if global_step % num_alphas == (num_alphas - 1):
+    averaged_alpha_star1 = summed_alpha_star1/num_alphas
     print(f'Average alpha_star1: {averaged_alpha_star1}')
     summed_alpha_star1 = 0                                    # back to zero for the next 50 alphas
       # set learning rate to the average of the last 50 alphas

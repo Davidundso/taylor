@@ -579,7 +579,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("$WORK/cluster_experiments/new")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/biased_lr")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)

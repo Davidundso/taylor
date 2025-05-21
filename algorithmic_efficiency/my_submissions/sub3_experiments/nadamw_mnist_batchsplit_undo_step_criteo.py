@@ -630,7 +630,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("/home/suckrowd/Documents/experiments_algoPerf/mnist040125_4")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo_debiased_alpha_each_1000_040125")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)
@@ -752,7 +752,7 @@ def update_params(workload: spec.Workload,
 def get_batch_size(workload_name):
   # Return the global batch size.
   if workload_name == 'criteo1tb':
-    return 262_144
+    return int(262_144/8 * 2)                            # divide by 8 as per 1/8 of hardware, times 2 for splitting batch to get rid of bias
   elif workload_name == 'fastmri':
     return 32
   elif workload_name == 'imagenet_resnet':

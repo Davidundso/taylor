@@ -412,10 +412,6 @@ def update_params(workload: spec.Workload,
 
 
   GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1)
-
-
-  outputs_check = current_model(inputs1)
-  loss_check = loss_fn(outputs_check, targets1)
   
 
 
@@ -444,10 +440,6 @@ def update_params(workload: spec.Workload,
     n_valid_examples1 = dist_nn.all_reduce(n_valid_examples1)
   loss1 = summed_loss1 / n_valid_examples1
 
-  if print_bool:  # print the values of the loss and the loss_check
-      print(f'Loss: {loss1.item()}, Loss_check: {loss_check.item()}, '
-            f'Difference: {loss1.item() - loss_check.item()}, '
-            f'Larger 1e-6: {abs(loss1.item() - loss_check.item()) > 1e-6}')
 
 
   loss1.backward()
@@ -580,7 +572,7 @@ def update_params(workload: spec.Workload,
 
   current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
   # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("/home/suckrowd/Documents/experiments/exp02a_1501_mnist")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/exp02a_criteo")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)
@@ -693,6 +685,11 @@ def update_params(workload: spec.Workload,
   
   if global_step % 1000 == 0:
     summed_alpha_star1 = 0
+  
+  # FOR TRAINING RESTART AT 25001: declare summed alpha with already computed values REMOVE LATER
+  if global_step <= 25002:
+    if 'summed_alpha_star1' not in globals():
+        summed_alpha_star1 = 0.0001732
 
   # sum alpha values scaled by the learning rate
   summed_alpha_star1 += alpha_star1.item()*current_lr

@@ -7,9 +7,9 @@
 #SBATCH --cpus-per-task=8           # Number of CPU cores per task
 #SBATCH --nodes=1                   # Ensure that all cores are on the same machine (single node)
 #SBATCH --partition=a100-galvani    # Partition to run your job on (adjust if necessary)
-#SBATCH --time=0-02:30              # Allowed runtime in D-HH:MM (adjust if needed)
+#SBATCH --time=2-00:00              # Allowed runtime in D-HH:MM (adjust if needed)
 #SBATCH --gres=gpu:1                # Requesting GPUs (if needed)
-#SBATCH --mem=200G                   # Total memory pool for all cores (adjust if necessary)
+#SBATCH --mem=150G                   # Total memory pool for all cores (adjust if necessary)
 #SBATCH --output=$WORK/cluster_experiments/cluster_exp01/job-%j.out   # STDOUT file
 #SBATCH --error=$WORK/cluster_experiments/cluster_exp01/job-%j.err    # STDERR file
 #SBATCH --mail-type=ALL             # Email notifications on job status
@@ -35,9 +35,9 @@ python3 submission_runner.py \
     --data_dir=/mnt/lustre/datasets/mlcommons/criteo1tb \
     --tuning_ruleset=self \
     --experiment_dir=$WORK/cluster_experiments \
-    --experiment_name=criteo0212_2 \
+    --experiment_name=criteo0312dbsb40 \
     --submission_path=my_submissions/sub2/sub2_debug_criteo1tb_test.py \
     --torch_compile=False \
-    --max_global_steps=50
+    --max_global_steps=15000
 
 conda deactivate

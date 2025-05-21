@@ -540,7 +540,7 @@ def update_params(workload: spec.Workload,
 
 
 
-  log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo0412_dbsb8_noEval")
+  log_dir = os.path.expandvars("$WORK/cluster_experiments/criteo_dbsb8_stepb_eval0512")
 
   # Ensure the directory exists
   os.makedirs(log_dir, exist_ok=True)

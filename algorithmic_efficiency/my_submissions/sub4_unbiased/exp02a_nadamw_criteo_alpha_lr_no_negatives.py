@@ -261,7 +261,7 @@ def update_params(workload: spec.Workload,
   del hyperparameters
 
   # do a normal step for most steps (using one half of the batch)
-  if global_step % 1000 >= 50:
+  if global_step % 2000 >= 50:
     hyperparameters = HPARAMS
 
     # only use half of the batch
@@ -313,7 +313,7 @@ def update_params(workload: spec.Workload,
       torch.nn.utils.clip_grad_norm_(
           current_model.parameters(), max_norm=grad_clip)
     optimizer_state['optimizer'].step()
-    if global_step < 1050:
+    if global_step < 2050:
       optimizer_state['scheduler'].step()
 
     # Log training metrics - loss, grad_norm, batch_size.
@@ -415,7 +415,7 @@ def update_params(workload: spec.Workload,
 
 
   outputs_check = current_model(inputs1)
-  loss_check = loss_fn(outputs_check, targets1)
+  loss_check = loss_fn(outputs_check, targets1.view(-1,1))
   
 
 
@@ -555,22 +555,26 @@ def update_params(workload: spec.Workload,
     print(f'Gradient difference: {torch.norm(gradients_b1 - gradients_b2, 2)}')
 
 
-  # Log training metrics - loss, grad_norm, batch_size.
   if global_step <= 100 or global_step % 500 == 0:
     with torch.no_grad():
-      parameters = [p for p in current_model.parameters() if p.grad is not None]
-      grad_norm = torch.norm(
-          torch.stack([torch.norm(p.grad.detach(), 2) for p in parameters]), 2)
+        parameters = [p for p in current_model.parameters() if p.grad is not None]
+        grad_norm = torch.norm(
+            torch.stack([torch.norm(p.grad.detach(), 2) for p in parameters]), 2)
+        # Extract the learning rate from the optimizer
+        learning_rate = optimizer_state['optimizer'].param_groups[0]['lr']
     if workload.metrics_logger is not None:
-      workload.metrics_logger.append_scalar_metrics(
-          {
-              'loss': loss1.item(),
-              'grad_norm': grad_norm.item(),
-          }, global_step)
-    logging.info('%d) loss = %0.3f, grad_norm = %0.3f',
+        workload.metrics_logger.append_scalar_metrics(
+            {
+                'loss': loss.item(),
+                'grad_norm': grad_norm.item(),
+                'learning_rate': learning_rate  # Log the learning rate
+            }, global_step)
+    logging.info('%d) loss = %0.3f, grad_norm = %0.3f, lr = %0.6f',
                  global_step,
-                 loss1.item(),
-                 grad_norm.item())
+                 loss.item(),
+                 grad_norm.item(),
+                 learning_rate)  # Include the learning rate in the logging
+
   
 
   # print the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 in one line
@@ -695,6 +699,7 @@ def update_params(workload: spec.Workload,
   if global_step % 1000 == 0:
     summed_alpha_star1 = 0
     count_pos_alphas = 0
+
 
   # sum alpha values scaled by the learning rate
   if alpha_star1.item() > 0:

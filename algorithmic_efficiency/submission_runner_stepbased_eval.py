@@ -379,7 +379,7 @@ def train_once(
     # Check if submission is eligible for an untimed eval.
     # if ((train_step_end_time - train_state['last_eval_time']) >=
     #    workload.eval_period_time_sec or train_state['training_complete']):
-    if global_step % 250 == 0:
+    if global_step % 2000 == 1:
       with profiler.profile('Evaluation'):
         del batch
         _reset_cuda_mem()
