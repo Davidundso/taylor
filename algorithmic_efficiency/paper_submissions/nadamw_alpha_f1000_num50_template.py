@@ -429,8 +429,19 @@ def update_params(workload: spec.Workload,
   # First half
   optimizer_state['optimizer'].zero_grad()
 
-  Data_b1 = [(inputs1.to(device), targets1.view(-1,1).to(device))]
+  
+
+  Data_b1 = [(inputs1.unsqueeze(1).to(device), targets1.unsqueeze(1).to(device))]
   # remove 'view(-1, 1)' for mnist
+  print(f"inputs1 dtype: {inputs1.dtype}, shape: {inputs1.shape}")
+  print(f"targets1 dtype: {targets1.dtype}, shape: {targets1.shape}")
+
+  current_model.eval()
+  print("testing forward pass:")
+  test_pass = current_model(inputs1.unsqueeze(1))
+  loss_fn = torch.nn.L1Loss()
+  loss = loss_fn(test_pass, targets1.unsqueeze(1))
+  print("successful forward pass")
 
   if timing:
     start_time_ggn = time.time()

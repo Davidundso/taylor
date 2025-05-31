@@ -428,14 +428,50 @@ def update_params(workload: spec.Workload,
 
   # First half
   optimizer_state['optimizer'].zero_grad()
+  """
+    # forward pass in the model_fn
+
+    with contexts[mode]():
+      logit_batch = model(
+          augmented_and_preprocessed_input_batch['inputs'].unsqueeze(
+              1)).squeeze(1)
+  """
+
+
 
   Data_b1 = [(inputs1.to(device), targets1.to(device))]
+
+
   # remove 'view(-1, 1)' for mnist
 
   if timing:
     start_time_ggn = time.time()
 
-  GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1)
+  """
+  def batch_size_fn(X, y):
+    return X['inputs'].shape[0]
+  print("Calling GGNLinearOperator with:")
+  print(f"X type: {type(Data_b1[0][0])}, keys: {list(Data_b1[0][0].keys())}")
+  print(f"X['inputs'].shape: {Data_b1[0][0]['inputs'].shape}")
+  print(f"y shape: {Data_b1[0][1].shape}")
+  print(f"batch_size_fn output: {batch_size_fn(*Data_b1[0])}")
+  """
+
+  def model_func(X: Dict[str, torch.Tensor]) -> torch.Tensor:
+        model = current_model
+        model.eval()  # always use eval mode for GGN computations
+        with torch.no_grad():  # disable gradients if the operator will re-enable them internally
+            logits = model(X['inputs'].unsqueeze(1)).squeeze(1)
+        return logits
+
+  def model_func(X: torch.Tensor) -> torch.Tensor:
+    model = current_model
+    model.eval()
+    with torch.no_grad():
+        return model(X.unsqueeze(1)).squeeze(1)
+
+
+  GGN_b1 = GGNLinearOperator(model_func, loss_fn, params_list, Data_b1)
 
   if timing:
     step_time_ggn = time.time() - start_time_ggn
