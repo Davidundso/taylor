@@ -383,8 +383,8 @@ def update_params(workload: spec.Workload,
 
   if timing:
     start_time_alpha = time.time()
-
-  device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+  rank = torch.distributed.get_rank()
+  device = torch.device(f'cuda:{rank}')
   print(f'Using device: {device}')
 
   loss_fn = get_loss_function(workload.loss_type)
@@ -431,22 +431,35 @@ def update_params(workload: spec.Workload,
 
   
 
-  Data_b1 = [(inputs1.unsqueeze(1).to(device), targets1.unsqueeze(1).to(device))]
+  # for fastmri: Data_b1 = [(inputs1.unsqueeze(1).to(device), targets1.unsqueeze(1).to(device))]
   # remove 'view(-1, 1)' for mnist
+
+  # Criteo:
+  Data_b1 = [(inputs1.to(device), targets1.view(-1,1).to(device))]
   print(f"inputs1 dtype: {inputs1.dtype}, shape: {inputs1.shape}")
   print(f"targets1 dtype: {targets1.dtype}, shape: {targets1.shape}")
 
   current_model.eval()
-  print("testing forward pass:")
-  test_pass = current_model(inputs1.unsqueeze(1))
-  loss_fn = torch.nn.L1Loss()
-  loss = loss_fn(test_pass, targets1.unsqueeze(1))
-  print("successful forward pass")
+
 
   if timing:
     start_time_ggn = time.time()
 
-  GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1)
+  class DistributedGGN:
+    def __init__(self, ggn_op):
+        self.ggn_op = ggn_op
+
+    def __matmul__(self, v):
+        local_result = self.ggn_op @ v
+        torch.distributed.all_reduce(local_result)  # Sum across GPUs
+        return local_result
+
+    def matvec(self, v):
+        return self.__matmul__(v)
+
+
+  GGN_b1_dist = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1)
+  GGN_b1 = DistributedGGN(GGN_b1)  # Wrap it
 
   if timing:
     step_time_ggn = time.time() - start_time_ggn
