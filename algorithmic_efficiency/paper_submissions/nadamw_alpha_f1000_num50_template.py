@@ -23,7 +23,8 @@ from curvlinops import GGNLinearOperator
 import torch.nn as nn
 import csv
 
-USE_PYTORCH_DDP = pytorch_setup()[0]
+USE_PYTORCH_DDP, RANK, DEVICE, N_GPUS = pytorch_setup()
+
 # To change the lr schedule: (1) Change the learning rate appropriately to make it e.g. smaller
 # (2) then change the step hint: an e.g. 4x smaller lr means 4x more steps are needed
 HPARAMS = {
@@ -269,6 +270,10 @@ def update_params(workload: spec.Workload,
   timing = True
   comp_alpha_early = True
 
+  print("Using torch.ddp:", USE_PYTORCH_DDP)
+  print("device name:", DEVICE)
+  print("device rank:", RANK)
+
 
   # do a normal step for most steps (using one half of the batch)
   if (global_step % comp_alphas_each >= num_consec_alphas or global_step < 2000) and not (comp_alpha_early and global_step > 3):
@@ -383,10 +388,8 @@ def update_params(workload: spec.Workload,
 
   if timing:
     start_time_alpha = time.time()
-  rank = torch.distributed.get_rank()
-  device = torch.device(f'cuda:{rank}')
-  print(f'Using device: {device}')
-
+ 
+  
   loss_fn = get_loss_function(workload.loss_type)
 
   hyperparameters = HPARAMS
@@ -435,7 +438,7 @@ def update_params(workload: spec.Workload,
   # remove 'view(-1, 1)' for mnist
 
   # Criteo:
-  Data_b1 = [(inputs1.to(device), targets1.view(-1,1).to(device))]
+  Data_b1 = [(inputs1.to(DEVICE), targets1.view(-1,1).to(DEVICE))]
   print(f"inputs1 dtype: {inputs1.dtype}, shape: {inputs1.shape}")
   print(f"targets1 dtype: {targets1.dtype}, shape: {targets1.shape}")
 
@@ -530,7 +533,7 @@ def update_params(workload: spec.Workload,
   if timing:
     start_time_ggn2 = time.time()
 
-  GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
+  # GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
 
   if timing:
     step_time_ggn2 = time.time() - start_time_ggn2
@@ -582,6 +585,7 @@ def update_params(workload: spec.Workload,
 
   # Compute alpha using d_unnormalized from batch 2 and ggn and gradient from batch 1
   GGNd1 = GGN_b1 @ d_unnormalized_b2.cpu().numpy()
+  print("computed GGN @ d successfully")
   GGNd1_tensor = torch.tensor(GGNd1, device='cpu')
 
   dGGNd_1 = torch.dot(GGNd1_tensor, d_unnormalized_b2)

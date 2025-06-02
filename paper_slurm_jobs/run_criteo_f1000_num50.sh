@@ -29,7 +29,7 @@ source ~/.bashrc
 conda activate $WORK/.conda/algo2
 
 # Compute Phase - running the experiment
-python3 submission_runner_stepbased_eval_1000_2.py \
+python3 submission_runner_no_eval.py \
     --framework=pytorch \
     --workload=criteo1tb \
     --data_dir=/mnt/lustre/datasets/mlcommons/criteo1tb \
@@ -38,7 +38,7 @@ python3 submission_runner_stepbased_eval_1000_2.py \
     --experiment_name=test1_criteo \
     --submission_path=paper_submissions/nadamw_alpha_f1000_num50_template.py \
     --torch_compile=False \
-    --max_global_steps=3 \
+    --max_global_steps=5 \
     --resume_last_run=True
 
 conda deactivate
