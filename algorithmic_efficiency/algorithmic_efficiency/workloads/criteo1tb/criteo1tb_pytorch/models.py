@@ -144,7 +144,8 @@ class DLRMResNet(nn.Module):
     dense_features, sparse_features = torch.split(
       x, [self.num_dense_features, self.num_sparse_features], 1)
 
-    # Bottom MLP.
+    # Bottom MLP. (CHANGED BY DAVID; ADDED PRINT)
+    print(f"[Rank {RANK}] Inside forward: dense_features.device = {dense_features.device}")
     embedded_dense = self.bot_mlp(dense_features)
 
     # Sparse feature processing.
