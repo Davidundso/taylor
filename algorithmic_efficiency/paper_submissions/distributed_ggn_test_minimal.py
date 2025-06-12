@@ -264,11 +264,8 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
-  num_consec_alphas = 50
-  comp_alphas_each = 1000
-  use_aplha = False                  # if you want to use alpha as learning rate (median)
+  reduction = 'sum'  # enum: 'sum', 'mean'
   timing = True
-  comp_alpha_early = True
 
 
   def get_loss_function(loss_type):
@@ -304,6 +301,8 @@ def update_params(workload: spec.Workload,
     def __matmul__(self, v):
         local_result = self.ggn_op @ v
         torch.distributed.all_reduce(local_result)  # Sums across GPUs, use AVG later
+        if reduction == 'mean':
+          local_result /= N_GPUS
         return local_result
 
     def matvec(self, v):
@@ -378,6 +377,8 @@ def update_params(workload: spec.Workload,
 
   # sum over GGN@v vectors
   torch.distributed.all_reduce(ggn_v_separate, op=torch.distributed.ReduceOp.SUM)  # later we want to use AVG, or compute AVG manually
+  if reduction == 'mean':
+    ggn_v_separate /= N_GPUS
 
   # rename to distinguish afterwards
   GGN_v_seperate_then_reduced = ggn_v_separate
@@ -410,14 +411,15 @@ def update_params(workload: spec.Workload,
   # split the batch into two halves
   batch_size = inputs.size(0)
   half_batch_size = batch_size // 2
+
   inputs1, inputs2 = inputs[:half_batch_size], inputs[half_batch_size:]
   targets1, targets2 = targets[:half_batch_size], targets[half_batch_size:]
+
   # for GGN: Data
   Data_1 = [(inputs1.to(DEVICE), targets1.view(-1,1).to(DEVICE))]  # remove 'view(-1, 1)' for mnist
   Data_2 = [(inputs2.to(DEVICE), targets2.view(-1,1).to(DEVICE))]  # remove 'view(-1, 1)' for mnist
 
   # compute GGN on both halves
-
   GGN_1_separate = GGNLinearOperator(current_model, loss_fn, params_list, Data_1)
   GGN_2_separate = GGNLinearOperator(current_model, loss_fn, params_list, Data_2)
 
@@ -427,7 +429,12 @@ def update_params(workload: spec.Workload,
 
   # reduce both halves
   torch.distributed.all_reduce(ggn_v_1_separate, op=torch.distributed.ReduceOp.SUM)
+  if reduction == 'mean':
+    ggn_v_1_separate /= N_GPUS
+
   torch.distributed.all_reduce(ggn_v_2_separate, op=torch.distributed.ReduceOp.SUM)
+  if reduction == 'mean':
+    ggn_v_2_separate /= N_GPUS
 
   # rename to distinguish afterwards
   GGN_v_1_separate_then_reduced = ggn_v_1_separate
@@ -435,9 +442,10 @@ def update_params(workload: spec.Workload,
 
   # add the two halves
   GGN_v_both_combined = GGN_v_1_separate_then_reduced + GGN_v_2_separate_then_reduced
+  if reduction == 'mean':
+    GGN_v_both_combined /= 2  # average the two halves
 
   # compare to GGN_v_reduced
-
   close_2 = torch.allclose(GGN_v_both_combined, GGN_v_reduced, rtol=1e-5, atol=1e-8) 
 
   # compute norm of both vectors
@@ -445,609 +453,18 @@ def update_params(workload: spec.Workload,
   norm_reduced = torch.norm(GGN_v_reduced, 2)
   print("Norm of GGN_v_both_combined:", norm_both_combined.item())
   print("Norm of GGN_v_reduced:", norm_reduced.item())
+  print("Difference in norms:", torch.abs(norm_both_combined - norm_reduced).item())
   print("Distributed reduced GGN@v equals separated and then reduced GGN@v (both halves):", close_2)
   
 
-
   raise RuntimeError("Test finished")
 
-
-
-
-
-
-    logits_batch, new_model_state = workload.model_fn(
-        params=current_model,
-        augmented_and_preprocessed_input_batch=batch,
-        model_state=model_state,
-        mode=spec.ForwardPassMode.TRAIN,
-        rng=rng,
-        update_batch_norm=True)
-
-    label_smoothing = (
-        hyperparameters.label_smoothing if hasattr(hyperparameters,
-                                                  'label_smoothing') else 0.0)
-    if hasattr(hyperparameters, 'grad_clip'):
-      grad_clip = hyperparameters.grad_clip
-    else:
-      grad_clip = None
-
-    loss_dict = workload.loss_fn(
-        label_batch=batch['targets'],
-        logits_batch=logits_batch,
-        # mask_batch=batch.get('weights'),
-        label_smoothing=label_smoothing)
-    summed_loss = loss_dict['summed']
-    n_valid_examples = loss_dict['n_valid_examples']
-    if USE_PYTORCH_DDP:
-      # Use dist_nn.all_reduce to ensure correct loss and gradient scaling.
-      summed_loss = dist_nn.all_reduce(summed_loss)
-      n_valid_examples = dist_nn.all_reduce(n_valid_examples)
-    loss = summed_loss / n_valid_examples
-
-    loss.backward()
-
-    if grad_clip is not None:
-      torch.nn.utils.clip_grad_norm_(
-          current_model.parameters(), max_norm=grad_clip)
-    optimizer_state['optimizer'].step()
-    if global_step < 2000 + num_consec_alphas:
-      optimizer_state['scheduler'].step()
-
-    # Log training metrics - loss, grad_norm, batch_size.
-    if global_step <= 100 or global_step % 500 == 0:
-      with torch.no_grad():
-        parameters = [p for p in current_model.parameters() if p.grad is not None]
-        grad_norm = torch.norm(
-            torch.stack([torch.norm(p.grad.detach(), 2) for p in parameters]), 2)
-      if workload.metrics_logger is not None:
-        workload.metrics_logger.append_scalar_metrics(
-            {
-                'loss': loss.item(),
-                'grad_norm': grad_norm.item(),
-            }, global_step)
-      logging.info('%d) loss = %0.3f, grad_norm = %0.3f',
-                  global_step,
-                  loss.item(),
-                  grad_norm.item())
-    if timing:
-      step_time_normal = time.time() - start_time_normal
-      print(f'Normal step time: {step_time_normal} seconds')
-
-    return (optimizer_state, current_param_container, new_model_state)
-  
-  # for num_consec_alphas of comp_alpha_each steps caclulate 
-  # alpha debiased and biased using both halves of the batch
-
-    # create torch loss function from workload loss type for GGN computation
-  def get_loss_function(loss_type):
-      """
-      Maps a loss type to a PyTorch loss function.
-
-      Args:
-          loss_type (LossType): The loss type Enum.
-
-      Returns:
-          A PyTorch loss function (instance of nn.Module).
-      """
-      loss_mapping = {
-          "SOFTMAX_CROSS_ENTROPY": nn.CrossEntropyLoss(),
-          "SIGMOID_CROSS_ENTROPY": nn.BCEWithLogitsLoss(),
-          "MEAN_SQUARED_ERROR": nn.MSELoss(),
-          "CTC_LOSS": nn.CTCLoss(),  # Requires alignment inputs
-          "MEAN_ABSOLUTE_ERROR": nn.L1Loss(),
-      }
-
-      # Convert Enum to string (e.g., "LossType.SOFTMAX_CROSS_ENTROPY" -> "SOFTMAX_CROSS_ENTROPY")
-      loss_type_str = loss_type.name if hasattr(loss_type, 'name') else str(loss_type)
-
-      if loss_type_str not in loss_mapping:
-          raise ValueError(f"Unsupported loss type: {loss_type_str}")
-
-      return loss_mapping[loss_type_str]
-
-  if timing:
-    start_time_alpha = time.time()
- 
-  
-  loss_fn = get_loss_function(workload.loss_type)
-
-  hyperparameters = HPARAMS
-
-  current_model = current_param_container
-
-  params_list = [param for param in current_model.parameters() if param.requires_grad] # save params before step
-
-  current_model.eval()
-  current_model.to(DEVICE)
-
-  if timing:
-    start_time_ggn = time.time()
-
-  class DistributedGGN:
-    def __init__(self, ggn_op):
-        self.ggn_op = ggn_op
-
-    def __matmul__(self, v):
-        local_result = self.ggn_op @ v
-        torch.distributed.all_reduce(local_result)  # Sums across GPUs, use AVG later
-        return local_result
-
-    def matvec(self, v):
-        return self.__matmul__(v)
-  
-  print(f"[Rank {RANK}] Model device: {next(current_model.parameters()).device}")
-  print(f"[Rank {RANK}] Data device: {inputs1.device}")
-  
-  for i, p in enumerate(params_list):
-    print(f"[Rank {RANK}] Param {i} device: {p.device}")
-
-  # test vector multiplication (same on all GPUs so don't use random numbers)
-  v = torch.ones_like(parameters_to_vector(params_list))
-
-  GGN_b1_separate = GGNLinearOperator(current_model, loss_fn, params_list, Data)
-  print("passed GGN initialization")
-
-  if timing:
-    step_time_ggn = time.time() - start_time_ggn
-    print(f' first GGN computation time: {step_time_ggn} seconds')
-
-  ggn_v_separate = GGN_b1_separate @ v
-  print("first five elements of ggn_v_separate:")
-  print(ggn_v_separate[:5])
-
-
-  torch.distributed.all_reduce(ggn_v_separate, op=torch.distributed.ReduceOp.SUM)  # later we want to use AVG, or compute AVG manually
-  GGN_v_seperate_then_reduced = ggn_v_separate
-
-
-  print("first five elements of ggn_v_sepparate_then_reduced:")
-  print(GGN_v_seperate_then_reduced[:5])
-
-  GGN_reduced = DistributedGGN(GGN_b1_separate)  # Wrap it
-  print("passed distributed initialization")
-
-  GGN_v_reduced = GGN_reduced @ v
-  print("first five elements of GGN_v_reduced:")
-  print(GGN_v_reduced[:5])
-
-  close = torch.allclose(GGN_v_seperate_then_reduced, GGN_v_reduced, rtol=1e-5, atol=1e-8)
-
-  # compute norm of both vectors
-  norm_separate = torch.norm(GGN_v_seperate_then_reduced, 2)
-  norm_reduced = torch.norm(GGN_v_reduced, 2)
-
-  print("Norm of GGN_v_separate:", norm_separate.item())
-  print("Norm of GGN_v_reduced:", norm_reduced.item())
-
-  print("Distributed reduced GGN@v equals separated and then reduced GGN@v:", close)
-
-  raise RuntimeError("Test finished")
-
-
-  # boolean for printing
-  p = 50
-  print_bool = global_step % p == 0
-
-  current_model.train()
-
-  # Split the batch into two halves
-  inputs = batch['inputs']
-  targets = batch['targets']
-
-
-  batch_size = inputs.size(0)
-  half_batch_size = batch_size // 2
-
-  inputs1, inputs2 = inputs[:half_batch_size], inputs[half_batch_size:]
-  targets1, targets2 = targets[:half_batch_size], targets[half_batch_size:]
-
-
-  # First half
-  optimizer_state['optimizer'].zero_grad()
-
-  
-
-  # for fastmri: Data_b1 = [(inputs1.unsqueeze(1).to(device), targets1.unsqueeze(1).to(device))]
-  # remove 'view(-1, 1)' for mnist
-
-  # Criteo:
-  Data_b1 = [(inputs1.to(DEVICE), targets1.view(-1,1).to(DEVICE))]
-  print(f"inputs1 dtype: {inputs1.dtype}, shape: {inputs1.shape}")
-  print(f"targets1 dtype: {targets1.dtype}, shape: {targets1.shape}")
-
-  current_model.eval()
-  current_model.to(DEVICE)
-  # current_model = DDP(current_model, device_ids=[RANK], output_device=RANK)
-
-  # params_list.to(DEVICE)
-
-
-  if timing:
-    start_time_ggn = time.time()
-
-  class DistributedGGN:
-    def __init__(self, ggn_op):
-        self.ggn_op = ggn_op
-
-    def __matmul__(self, v):
-        local_result = self.ggn_op @ v
-        torch.distributed.all_reduce(local_result)  # Sums across GPUs, use AVG later
-        return local_result
-
-    def matvec(self, v):
-        return self.__matmul__(v)
-  
-  print(f"[Rank {RANK}] Model device: {next(current_model.parameters()).device}")
-  print(f"[Rank {RANK}] Data device: {inputs1.device}")
-  
-  for i, p in enumerate(params_list):
-    print(f"[Rank {RANK}] Param {i} device: {p.device}")
-
-  # test vector multiplication (same on all GPUs so don't use random numbers)
-  v = torch.ones_like(parameters_to_vector(params_list))
-
-  GGN_b1_separate = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1)
-  print("passed GGN initialization")
-
-  if timing:
-    step_time_ggn = time.time() - start_time_ggn
-    print(f' first GGN computation time: {step_time_ggn} seconds')
-
-  ggn_v_separate = GGN_b1_separate @ v
-  print("first five elements of ggn_v_separate:")
-  print(ggn_v_separate[:5])
-
-
-  torch.distributed.all_reduce(ggn_v_separate, op=torch.distributed.ReduceOp.SUM)  # later we want to use AVG, or compute AVG manually
-  GGN_v_seperate_then_reduced = ggn_v_separate
-
-
-  print("first five elements of ggn_v_sepparate_then_reduced:")
-  print(GGN_v_seperate_then_reduced[:5])
-
-  GGN_reduced = DistributedGGN(GGN_b1_separate)  # Wrap it
-  print("passed distributed initialization")
-
-  GGN_v_reduced = GGN_reduced @ v
-  print("first five elements of GGN_v_reduced:")
-  print(GGN_v_reduced[:5])
-
-  close = torch.allclose(GGN_v_seperate_then_reduced, GGN_v_reduced, rtol=1e-5, atol=1e-8)
-
-  # compute norm of both vectors
-  norm_separate = torch.norm(GGN_v_seperate_then_reduced, 2)
-  norm_reduced = torch.norm(GGN_v_reduced, 2)
-
-  print("Norm of GGN_v_separate:", norm_separate.item())
-  print("Norm of GGN_v_reduced:", norm_reduced.item())
-
-  print("Distributed reduced GGN@v equals separated and then reduced GGN@v:", close)
-
-  raise RuntimeError("Test finished")
-
-
-  print("v shape:", v.shape)
-  out = GGN_b1 @ v  # or GGN_b1.matvec(v)
-  print("Output shape:", out.shape)
-
-
-  logits_batch1, new_model_state1 = workload.model_fn(
-      params=current_model,
-      augmented_and_preprocessed_input_batch={'inputs': inputs1, 'targets': targets1},
-      model_state=model_state,
-      mode=spec.ForwardPassMode.TRAIN,
-      rng=rng,
-      update_batch_norm=False)
-
-  label_smoothing = (
-      hyperparameters.label_smoothing if hasattr(hyperparameters,
-                                                 'label_smoothing') else 0.0)
-  grad_clip = hyperparameters.grad_clip if hasattr(hyperparameters, 'grad_clip') else None
-
-  loss_dict1 = workload.loss_fn(
-      label_batch=targets1,
-      logits_batch=logits_batch1,
-      # mask_batch=weights1,
-      label_smoothing=label_smoothing)
-  summed_loss1 = loss_dict1['summed']
-  n_valid_examples1 = loss_dict1['n_valid_examples']
-  if USE_PYTORCH_DDP:
-    summed_loss1 = dist_nn.all_reduce(summed_loss1)
-    n_valid_examples1 = dist_nn.all_reduce(n_valid_examples1)
-  loss1 = summed_loss1 / n_valid_examples1
-
-
-
-  loss1.backward()
-
-  gradients_b1 = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None).cpu()
-  gradients_norm_b1 = torch.norm(gradients_b1, 2)
-
-  # Gradient clipping for the first half
-  if grad_clip is not None:
-    torch.nn.utils.clip_grad_norm_(current_model.parameters(), max_norm=grad_clip)
-
- 
-  # make sure everything is on the same device
-  current_model.to('cuda:0')
-
-  # Moving to the second half
-
-  params_list = [param for param in current_model.parameters() if param.requires_grad] # save params before step
-  theta_0_b2 = parameters_to_vector([param.detach().clone() for param in params_list]).cpu() # convert to vector
-
-  # check if theta_0_b1 and theta_0_b2 are the same
-  if print_bool:
-    if torch.norm(theta_0_b1 - theta_0_b2, 2) > 1e-6:
-      print('Error: The parameters before the two halves are not the same')
-      print(f'Norm of difference: {torch.norm(theta_0_b1 - theta_0_b2, 2)}')
-      print('Exiting...')
-      exit()
-
-
-  # Second half
-  optimizer_state['optimizer'].zero_grad()
-  # compute ggn
-  Data_b2 = [(inputs2.to(device), targets2.view(-1,1).to(device))] # remove 'view(-1, 1)' for mnist
-
-  if timing:
-    start_time_ggn2 = time.time()
-
-  # GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
-
-  if timing:
-    step_time_ggn2 = time.time() - start_time_ggn2
-    print(f' second GGN computation time: {step_time_ggn2} seconds')
-
-  logits_batch2, new_model_state2 = workload.model_fn(
-      params=current_model,
-      augmented_and_preprocessed_input_batch={'inputs': inputs2, 'targets': targets2},
-      model_state=model_state,
-      mode=spec.ForwardPassMode.TRAIN,
-      rng=rng,
-      update_batch_norm=True)
-  
-  label_smoothing = (
-      hyperparameters.label_smoothing if hasattr(hyperparameters,
-                                                  'label_smoothing') else 0.0)
-  grad_clip = hyperparameters.grad_clip if hasattr(hyperparameters, 'grad_clip') else None
-
-  loss_dict2 = workload.loss_fn(
-      label_batch=targets2,
-      logits_batch=logits_batch2,
-      # mask_batch=weights2, removed. cannot be passed to GGN
-      label_smoothing=label_smoothing)
-  summed_loss2 = loss_dict2['summed']
-  n_valid_examples2 = loss_dict2['n_valid_examples']
-  if USE_PYTORCH_DDP:
-    summed_loss2 = dist_nn.all_reduce(summed_loss2)
-    n_valid_examples2 = dist_nn.all_reduce(n_valid_examples2)
-  loss2 = summed_loss2 / n_valid_examples2
-  loss2.backward()
-
-  gradients_b2 = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None).cpu()
-  gradients_norm_b2 = torch.norm(gradients_b2, 2)
-
-  # Gradient clipping for the second half
-  if grad_clip is not None:
-    torch.nn.utils.clip_grad_norm_(current_model.parameters(), max_norm=grad_clip)
-
-  # Update the parameters after the second half
-  optimizer_state['optimizer'].step()
-  if global_step <= num_consec_alphas:
-    optimizer_state['scheduler'].step()
-
-  theta_1_b2 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad]).cpu()  
-
-  d_unnormalized_b2 = theta_1_b2 - theta_0_b2
-
-  d_unnormalized_b2 = d_unnormalized_b2.to('cpu')  # Move to CPU if necessary
-
-  # Compute alpha using d_unnormalized from batch 2 and ggn and gradient from batch 1
-  GGNd1 = GGN_b1 @ d_unnormalized_b2.cpu().numpy()
-  print("computed GGN @ d successfully")
-  GGNd1_tensor = torch.tensor(GGNd1, device='cpu')
-
-  dGGNd_1 = torch.dot(GGNd1_tensor, d_unnormalized_b2)
-
-  dg1 = - torch.dot(gradients_b1, d_unnormalized_b2)  # numerator: - d^T*g
-
-  alpha_star1 = dg1 / dGGNd_1
-
-
-  # compute alpha using only batch 2
-  GGNd_b2 = GGN_b2 @ d_unnormalized_b2.cpu().numpy()
-  GGNd_b2_tensor = torch.tensor(GGNd_b2, device='cpu')
-
-  dGGNd_b2 = torch.dot(GGNd_b2_tensor, d_unnormalized_b2)
-
-  dg_b2 = - torch.dot(gradients_b2, d_unnormalized_b2)  # numerator: - d^T*g
-
-  alpha_star_b2 = dg_b2 / dGGNd_b2
-
-  if timing:
-    step_time_alpha = time.time() - start_time_alpha
-    print(f'Full alpha-step computation time: {step_time_alpha} seconds')
-    step_time_no_ggn = step_time_alpha - step_time_ggn - step_time_ggn2
-    print(f'Alpha step time without GGN time: {step_time_no_ggn} seconds')
-
-  # compare the gradients
-  if print_bool:
-    print(f'Gradient difference: {torch.norm(gradients_b1 - gradients_b2, 2)}')
-
-
-  # Log training metrics - loss, grad_norm, batch_size.
-  if global_step <= 100 or global_step % 500 == 0:
-    with torch.no_grad():
-      parameters = [p for p in current_model.parameters() if p.grad is not None]
-      grad_norm = torch.norm(
-          torch.stack([torch.norm(p.grad.detach(), 2) for p in parameters]), 2)
-    if workload.metrics_logger is not None:
-      workload.metrics_logger.append_scalar_metrics(
-          {
-              'loss': loss1.item(),
-              'grad_norm': grad_norm.item(),
-          }, global_step)
-    logging.info('%d) loss = %0.3f, grad_norm = %0.3f',
-                 global_step,
-                 loss1.item(),
-                 grad_norm.item())
-  
-
-  # print the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 in one line
-  if print_bool:
-    print(f'alpha_star1: {alpha_star1}, alpha_star_b1: {alpha_star_b2}')
-
-
-  current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
-  # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-  log_dir = os.path.expandvars("$WORK/paper_experiments/test1_imagenet") # change to your log dir
-  
-  # Ensure the directory exists
-  os.makedirs(log_dir, exist_ok=True)
-
-  # Construct the full path to the log file
-  log_file_path = os.path.join(log_dir, 'alpha_star_log.csv')
-
-  log_data = [global_step, alpha_star1.item(), alpha_star_b2.item(), current_lr]
-
-  # Check if the file exists and write a header if needed
-  try:
-      with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
-          writer = csv.writer(log_file)
-          writer.writerow(["Global step", "alpha1 unbiased (GGN,g B1; d B2)", "alpha B2 biased", "Learning rate"
-                           ])  # Write header
-  except FileExistsError:
-      pass  # File already exists, no need to write the header
-
-  # Append the log data
-  with open(log_file_path, 'a') as log_file:
-      writer = csv.writer(log_file)
-      writer.writerow(log_data)
-
-  # log the same values but each multiplied by the learning rate into a new file alpha_star_scaled_log.csv
-
-  # Ensure the directory exists
-  os.makedirs(log_dir, exist_ok=True)
-
-  # Construct the full path to the log file
-  log_file_path = os.path.join(log_dir, 'alpha_star_scaled_log.csv')
-
-  log_data = [global_step, alpha_star1.item()*current_lr, alpha_star_b2.item()*current_lr, current_lr]
-
-  # Check if the file exists and write a header if needed
-
-  try:
-      with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
-          writer = csv.writer(log_file)
-          writer.writerow(["Global step", "alpha1 unbiased * lr (GGN,g B1; d B2)", "alpha B2 biased * lr", "Learning rate"
-                           ])  # Write header
-  except FileExistsError:
-      pass
-  
-  # Append the log data
-  with open(log_file_path, 'a') as log_file:
-      writer = csv.writer(log_file)
-      writer.writerow(log_data)
-
-  # log all numerators and denominators of the alphas next to the alphas in a new file alpha_star_numerators_denominators_log.csv
-
-  # Check cosine similarity
-  cosine_1 = torch.dot(gradients_b1, d_unnormalized_b2) / (gradients_b1.norm() * d_unnormalized_b2.norm())
-  cosine_b2 = torch.dot(gradients_b2, d_unnormalized_b2) / (gradients_b2.norm() * d_unnormalized_b2.norm())
-
-  # Ensure the directory exists
-  os.makedirs(log_dir, exist_ok=True)
-
-  # Construct the full path to the log file
-  log_file_path = os.path.join(log_dir, 'alpha_star_numerators_denominators_log.csv')
-
-  log_data = [global_step, 
-              alpha_star1.item(), dg1.item(), dGGNd_1.item(), cosine_1.item(),
-              alpha_star_b2.item(), dg_b2.item(), dGGNd_b2.item(), cosine_b2.item(),
-                  current_lr]
-  
-  # Check if the file exists and write a header if needed
-  try:
-      with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
-          writer = csv.writer(log_file)
-          writer.writerow(["Global step",
-            "alpha1 unbiased", "dg1 (d B2, g B1)", "dGGNd1 (d B2, GGN B1)", "cosine1 (d B2, g B1)",
-            "alpha B2 biased", "dg B2 biased", "dGGNd B2 biased", "cosine2 biased",
-            "Current learning rate"
-                           ])  # Write header
-  except FileExistsError:
-      pass
-  
-  # Append the log data
-  with open(log_file_path, 'a') as log_file:
-      writer = csv.writer(log_file)
-      writer.writerow(log_data)
-
-  
-  # log the gradient norms, d_norms and loss values in a new file gradient_d_loss_log.csv
-
-  # Ensure the directory exists
-  os.makedirs(log_dir, exist_ok=True)
-
-  # Construct the full path to the log file
-  log_file_path = os.path.join(log_dir, 'gradient_d_loss_log.csv')
-
-  log_data = [global_step, gradients_norm_b1.item(), gradients_norm_b2.item(),torch.norm(d_unnormalized_b2, 2).item(), loss1.item(), loss2.item()]
-
-  # Check if the file exists and write a header if needed
-  try:
-      with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
-          writer = csv.writer(log_file)
-          writer.writerow(["Global step", "Gradient norm B1", "Gradient norm B2", "d norm B2", "Loss B1", "Loss B2"
-                           ])  # Write header
-  except FileExistsError:
-      pass
-  
-  # Append the log data
-  with open(log_file_path, 'a') as log_file:
-      writer = csv.writer(log_file)
-      writer.writerow(log_data)
-  
-  if use_aplha:
-    # declare global variable for average of alpha*lr
-    global alpha_values
-    
-    if global_step % comp_alphas_each == 0 or global_step == 53001:
-      alpha_values = []
-
-    # sum alpha values scaled by the learning rate
-    alpha_values.append(alpha_star1 * current_lr)  # Store as tensors directly
-
-    # after 50 alphas were added, calculate the average and print it
-    if global_step % comp_alphas_each == num_consec_alphas - 1 and global_step > comp_alphas_each:
-      tensor_alpha_values = torch.stack(alpha_values)  # Convert list of tensors to a single tensor
-      # Compute median using quantile with midpoint interpolation
-      median_alpha_star1 = torch.quantile(tensor_alpha_values, 0.5, interpolation='midpoint')  
-
-      alpha_values = []                     # back to zero for the next 50 alphas
-
-      if median_alpha_star1.item() > 0:
-        for i, param_group in enumerate(optimizer_state['optimizer'].param_groups):
-            # Print the current learning rate before changing
-            print(f"Before change - Parameter group {i}: lr = {param_group['lr']}")
-            
-            # Change the learning rate
-            param_group['lr'] = median_alpha_star1.item()
-
-            # Print the new learning rate after changing
-            print(f"After change - Parameter group {i}: lr = {param_group['lr']}")
-
-
-
-  return optimizer_state, current_param_container, new_model_state2  # Return the final model state
 
 
 def get_batch_size(workload_name):
   # Return the global batch size.
   if workload_name == 'criteo1tb':
-    return int(262_144/8 * 2)  # 2x the batch size for the two halves,divide by 8 for using only one instead of 8 a100 GPUs (compared to AlgoPerf comptetion)
+    return int(262_144/8)  # smaller batch size for testing
   elif workload_name == 'fastmri':
     return int(32/8 * 2)
   elif workload_name == 'imagenet_resnet':
