@@ -264,8 +264,24 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
-  reduction = 'sum'  # enum: 'sum', 'mean'
+  reduction = 'mean'  # enum: 'sum', 'mean', sum leads to different results depending on the number of GPUs, mean leads to same results
   timing = True
+
+  # Mini Demo of torch distributed
+  vec = torch.randn(5)
+  if USE_PYTORCH_DDP:
+    # Ensure the vector is on the correct device
+    vec = vec.to(DEVICE)
+  vec_orig = vec.clone()
+
+  # All-reduce sum across processes
+  torch.distributed.all_reduce(vec, op=torch.distributed.ReduceOp.SUM)
+
+  # Diagnostics
+  print(f"Original vector: {vec_orig}")
+  print(f"Reduced vector: {vec}")
+  print(f"Norm before: {vec_orig.norm():.4f}, after: {vec.norm():.4f}")
+
 
 
   def get_loss_function(loss_type):
@@ -375,35 +391,36 @@ def update_params(workload: spec.Workload,
   print("first five elements of ggn_v_separate:")
   print(ggn_v_separate[:5])
 
+  print("Norm of ggn_v_separate before all_reduce:", DEVICE, torch.norm(ggn_v_separate).item())
   # sum over GGN@v vectors
   torch.distributed.all_reduce(ggn_v_separate, op=torch.distributed.ReduceOp.SUM)  # later we want to use AVG, or compute AVG manually
   if reduction == 'mean':
     ggn_v_separate /= N_GPUS
 
   # rename to distinguish afterwards
-  GGN_v_seperate_then_reduced = ggn_v_separate
+  GGN_v_separate_then_reduced = ggn_v_separate
 
-  print("first five elements of ggn_v_sepparate_then_reduced:")
-  print(GGN_v_seperate_then_reduced[:5])
+  print("first five elements of ggn_v_separate_then_reduced:")
+  print(GGN_v_separate_then_reduced[:5])
 
   # GGN wrapper: Also computes summed product if used for vector multiplication
   GGN_reduced = DistributedGGN(GGN_separate)  
-  print("passed distributed initialization")
+
 
   # compute reduced version
   GGN_v_reduced = GGN_reduced @ v
   print("first five elements of GGN_v_reduced:")
   print(GGN_v_reduced[:5])
 
+  print("Norm of GGN_v_reduced:", DEVICE, torch.norm(GGN_v_reduced).item())
+  print("Norm of GGN_v_separate_then_reduced:", DEVICE, torch.norm(GGN_v_separate_then_reduced).item())
+
   # compare: Do we get the same result if we use separate GGN@v's and then sum AND if we use our class which inherently reduces
-  close = torch.allclose(GGN_v_seperate_then_reduced, GGN_v_reduced, rtol=1e-5, atol=1e-8)
+  close = torch.allclose(GGN_v_separate_then_reduced, GGN_v_reduced, rtol=1e-5, atol=1e-8)
 
   # compute norm of both vectors
-  norm_separate = torch.norm(GGN_v_seperate_then_reduced, 2)
+  norm_separate = torch.norm(GGN_v_separate_then_reduced, 2)
   norm_reduced = torch.norm(GGN_v_reduced, 2)
-
-  print("Norm of GGN_v_separate:", norm_separate.item())
-  print("Norm of GGN_v_reduced:", norm_reduced.item())
 
   print("Distributed reduced GGN@v equals separated and then reduced GGN@v:", close)
 
@@ -426,6 +443,15 @@ def update_params(workload: spec.Workload,
   # compute GGN@v on both halves
   ggn_v_1_separate = GGN_1_separate @ v
   ggn_v_2_separate = GGN_2_separate @ v
+
+  print("cosine similarity between ggn_v_1_separate and ggn_v_2_separate:", DEVICE, 
+    torch.dot(ggn_v_1_separate, ggn_v_2_separate) / (torch.norm(ggn_v_1_separate) * torch.norm(ggn_v_2_separate)))
+
+  print("Norm GGN_v_1 before all_reduce:", DEVICE, torch.norm(ggn_v_1_separate).item())
+  print("Norm GGN_v_2 before all_reduce:", DEVICE, torch.norm(ggn_v_2_separate).item())
+  print("Norm GGN_v_reduced:", DEVICE, torch.norm(GGN_v_reduced).item())
+  print("Norm (GGN_v_1 + GGN_v_2):", DEVICE, torch.norm(ggn_v_1_separate + ggn_v_2_separate).item())
+
 
   # reduce both halves
   torch.distributed.all_reduce(ggn_v_1_separate, op=torch.distributed.ReduceOp.SUM)
@@ -451,9 +477,10 @@ def update_params(workload: spec.Workload,
   # compute norm of both vectors
   norm_both_combined = torch.norm(GGN_v_both_combined, 2)
   norm_reduced = torch.norm(GGN_v_reduced, 2)
-  print("Norm of GGN_v_both_combined:", norm_both_combined.item())
-  print("Norm of GGN_v_reduced:", norm_reduced.item())
-  print("Difference in norms:", torch.abs(norm_both_combined - norm_reduced).item())
+
+  print("Norm of GGN_v_both_combined:", DEVICE, norm_both_combined.item())
+  print("Norm of GGN_v_reduced:", DEVICE, norm_reduced.item())
+  print("Difference in norms:", DEVICE, torch.abs(norm_both_combined - norm_reduced).item())
   print("Distributed reduced GGN@v equals separated and then reduced GGN@v (both halves):", close_2)
   
 
