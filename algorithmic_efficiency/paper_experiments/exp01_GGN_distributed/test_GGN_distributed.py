@@ -2,13 +2,12 @@ import torch
 import torch.distributed as dist
 import torch.multiprocessing as mp
 from torch.nn.parallel import DistributedDataParallel as DDP
-from curvlinops import GGNLinearOperator  # Assuming curvlinops is installed
+from curvlinops import GGNLinearOperator
 import os
 
-# Set this globally
 reduction = "mean"
 
-# Your model, loss, and data
+# defining a simple model, loss function, and data generation
 def model_fn():
     return torch.nn.Sequential(
         torch.nn.Linear(10, 5),
@@ -19,20 +18,19 @@ def model_fn():
 def loss_fn():
     return torch.nn.MSELoss(reduction='mean')
 
-# Dummy data (you can replace this with your real batch)
 def get_data():
     x = torch.randn(64, 10)
     y = torch.randn(64, 1)
     return x, y
 
-# This class wraps the GGN in a distributed way
+# our custom distributed GGN operator
 class DistributedGGN:
     def __init__(self, ggn_op):
         self.ggn_op = ggn_op
 
     def __matmul__(self, v):
         local_result = self.ggn_op @ v
-        dist.all_reduce(local_result)  # Sum across GPUs
+        dist.all_reduce(local_result)
         if reduction == 'mean':
             local_result /= dist.get_world_size()
         return local_result
@@ -40,64 +38,83 @@ class DistributedGGN:
     def matvec(self, v):
         return self.__matmul__(v)
 
-# === Main DDP logic ===
-def ddp_worker(rank, world_size, v, single_gpu_result):
+# Distributed worker function: We call this after our single GPU computation is done
+def ddp_worker(rank, world_size, v, initial_state_dict, result_single):
     rank = int(os.environ["RANK"])
     local_rank = int(os.environ["LOCAL_RANK"])
-    world_size = int(os.environ["WORLD_SIZE"])
 
-    dist.init_process_group("nccl", rank=rank, world_size=world_size)
+    dist.init_process_group("nccl")
     torch.cuda.set_device(local_rank)
+    torch.manual_seed(0)
+    torch.cuda.manual_seed(0)
 
-    # Setup model and data
-    model = model_fn().to(rank)
+    model = model_fn().to(local_rank)
+    model.load_state_dict(initial_state_dict)
     loss = loss_fn()
-    x, y = get_data()
-    x = x.to(rank)
-    y = y.to(rank)
-    model = DDP(model, device_ids=[rank])
-    params = list(model.module.parameters())
 
-    # Build GGN operator
-    ggn_op = GGNLinearOperator(model, loss, params, (x, y))
+    # Load full data and shard by rank
+    x_full, y_full = get_data()
+    share_size = x_full.size(0) // world_size
+    x = x_full[rank * share_size:(rank + 1) * share_size].to(local_rank)
+    y = y_full[rank * share_size:(rank + 1) * share_size].to(local_rank)
+
+    model = DDP(model, device_ids=[local_rank])
+    params = list(model.module.parameters())
+    data = [(x, y)]
+
+    ggn_op = GGNLinearOperator(model, loss, params, data)
     dist_ggn = DistributedGGN(ggn_op)
 
-    # Broadcast vector to all processes
-    v = v.to(rank)
+    # Broadcast v to all processes
+    v_shape = v.shape
+    if rank == 0:
+        v = v.to(local_rank)
+    else:
+        v = torch.empty(v_shape, device=local_rank)
     dist.broadcast(v, src=0)
 
     result = dist_ggn @ v
 
-    # Only rank 0 compares
     if rank == 0:
-        match = torch.allclose(result.cpu(), single_gpu_result, atol=1e-6)
-        print(f"Distributed result matches single-GPU: {match}")
+        match = torch.allclose(result.cpu(), result_single, atol=1e-6)
+        print(f"\nDistributed result matches single-GPU: {match}")
         if not match:
-            print("Difference:", (result.cpu() - single_gpu_result).norm())
+            diff = (result.cpu() - result_single).norm().item()
+            print(f"Difference norm: {diff:.6f}")
+        # print the result for verification
+        print("Distributed result:", result.cpu().numpy())
+        print("Single-GPU result:", result_single.numpy())
+        print("Broadcasted vector v:", v.cpu().numpy())
+    # raise error to ensure all processes complete
+    raise RuntimeError("Test completed.")
 
-    dist.destroy_process_group()
-
-# === Main entry ===
 def main():
-    # Single-GPU run
+    torch.manual_seed(0)
+    torch.cuda.manual_seed(0)
+
     model = model_fn().cuda(0)
+    model_state = model.state_dict()
     loss = loss_fn()
+
     x, y = get_data()
     x = x.cuda(0)
     y = y.cuda(0)
+
     params = list(model.parameters())
-    ggn_op = GGNLinearOperator(model, loss, params, (x, y))
+    data = [(x, y)]
+    ggn_op = GGNLinearOperator(model, loss, params, data)
 
-    # Test vector (randomly generated)
     v = torch.randn_like(torch.cat([p.view(-1) for p in params]))
-
-    # Run single-GPU computation
     result_single = ggn_op @ v.cuda(0)
     result_single = result_single.cpu()
 
-    # Launch multi-GPU DDP
     world_size = torch.cuda.device_count()
-    mp.spawn(ddp_worker, args=(world_size, v, result_single), nprocs=world_size, join=True)
+    mp.spawn(
+        ddp_worker,
+        args=(world_size, v, model_state, result_single),
+        nprocs=world_size,
+        join=True
+    )
 
 if __name__ == "__main__":
     main()
