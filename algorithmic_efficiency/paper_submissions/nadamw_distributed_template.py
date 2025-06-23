@@ -306,11 +306,11 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
-  num_consec_alphas = 25
+  num_consec_alphas = 100
   comp_alphas_each = 1000
-  start_comp_alpha = 0             # earliest alpha computations: If set to zero alpha is computed for the first num_consec_alphas steps 
-  timing = True                      # if timings should be printed
-  workload_name = 'criteo1tb'
+  start_comp_alpha = 50             # earliest alpha computations: If set to zero alpha is computed for the first num_consec_alphas steps 
+  timing = True                    # if timings should be printed
+  workload_name = 'criteo1tb'      # enum: criteo1tb, imagenet_resnet, imagenet_vit
   use_median_alpha = False         # if True, use the median of the last num_consec_alphas alphas to set the learning rate
 
 
@@ -393,7 +393,39 @@ def update_params(workload: spec.Workload,
       
     if timing:
       time_normal_step = time.time() - start_normal_step
-      print("normal step took:", time_normal_step)
+      
+    
+    if timing:
+      if workload_name == 'criteo1tb':
+        log_dir = os.path.expandvars("$WORK/paper_experiments/test1_criteo")
+      elif workload_name == 'imagenet_resnet':
+        log_dir = os.path.expandvars("$WORK/paper_experiments/test1_imagenet_resnet")
+      elif workload_name == 'imagenet_vit':
+        log_dir = os.path.expandvars("$WORK/paper_experiments/test1_imagenet_vit")
+    
+      # Ensure the directory exists
+      os.makedirs(log_dir, exist_ok=True)
+
+      # Construct the full path to the log file
+      log_file_path = os.path.join(log_dir, 'timing_log.csv')
+
+      log_data = [global_step, "", "", time_normal_step]  # Empty strings for GGN and alpha step times
+
+      # Check if the file exists and write a header if needed
+      try:
+          with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
+              writer = csv.writer(log_file)
+              writer.writerow(["Global step", "GGN time B1", "Alpha step time", "Normal step time"
+                              ])  # Write header
+      except FileExistsError:
+          pass
+      
+      # Append the log data
+      with open(log_file_path, 'a') as log_file:
+          writer = csv.writer(log_file)
+          writer.writerow(log_data)
+
+    
 
     return (optimizer_state, current_param_container, new_model_state)
   
@@ -432,6 +464,9 @@ def update_params(workload: spec.Workload,
 
   if workload_name == 'criteo1tb':
     Data_b1 = [(inputs1.to(DEVICE), targets1.view(-1,1).to(DEVICE))] # criteo needs the targets like this (due to custom forward function)
+  
+  if workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
+    Data_b1 = [(inputs1.to(device), targets1.to(device))]
 
   if timing:
     start_ggn_b1 = time.time()
@@ -439,6 +474,8 @@ def update_params(workload: spec.Workload,
   GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1)
   # construct combined GGN
   GGN_b1_combined = DistributedGGN(GGN_b1, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction 
+  # Data1 not used anymore, so we can delete it (saves memory)
+  del Data_b1
   
   if timing:
     time_ggn_b1 = time.time() - start_ggn_b1
@@ -485,15 +522,20 @@ def update_params(workload: spec.Workload,
 
   # Second half
   optimizer_state['optimizer'].zero_grad()
-
+  
   # compute ggn
   if workload_name == 'criteo1tb':
     Data_b2 = [(inputs2.to(DEVICE), targets2.view(-1,1).to(DEVICE))] 
-  # use if for all other workloads
+
+  if workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
+    Data_b1 = [(inputs2.to(device), targets2.to(device))]
 
   GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
   # construct combined GGN
   GGN_b2_combined = DistributedGGN(GGN_b2, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction
+  # Data2 not used anymore, so we can delete it (saves memory)
+  del Data_b2
+  
 
 
   logits_batch2, new_model_state2 = workload.model_fn(
@@ -546,7 +588,7 @@ def update_params(workload: spec.Workload,
 
   dg1 = - torch.dot(gradients_b1, d_unnormalized_b2)  # numerator: - d^T*g
 
-  alpha_star1 = dg1 / dGGNd_1
+  alpha_star1_unbiased = dg1 / dGGNd_1
 
   # compute alpha using only batch 2
   GGNd_b2 = GGN_b2_combined @ d_unnormalized_b2
@@ -555,7 +597,7 @@ def update_params(workload: spec.Workload,
 
   dg_b2 = - torch.dot(gradients_b2, d_unnormalized_b2)  # numerator: - d^T*g
 
-  alpha_star_b2 = dg_b2 / dGGNd_b2
+  alpha_star_b2_biased = dg_b2 / dGGNd_b2
 
   if timing:
      alpha_step_time = time.time() - start_time_alpha_step
@@ -581,8 +623,13 @@ def update_params(workload: spec.Workload,
 
 
     current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
-    # log the values of alpha_star1, alpha_star2, alpha_star_b1, alpha_star_b2 into a csv file
-    log_dir = os.path.expandvars("$WORK/paper_experiments/test1_criteo")
+    # log the values of alpha_star1_unbiased, alpha_star2, alpha_star_b1, alpha_star_b2_biased into a csv file
+    if workload_name == 'criteo1tb':
+      log_dir = os.path.expandvars("$WORK/paper_experiments/test1_criteo")
+    elif workload_name == 'imagenet_resnet':
+      log_dir = os.path.expandvars("$WORK/paper_experiments/test1_imagenet_resnet")
+    elif workload_name == 'imagenet_vit':
+      log_dir = os.path.expandvars("$WORK/paper_experiments/test1_imagenet_vit")
 
     # Ensure the directory exists
     os.makedirs(log_dir, exist_ok=True)
@@ -590,7 +637,7 @@ def update_params(workload: spec.Workload,
     # Construct the full path to the log file
     log_file_path = os.path.join(log_dir, 'alpha_star_log.csv')
 
-    log_data = [global_step, alpha_star1.item(), alpha_star_b2.item(), current_lr]
+    log_data = [global_step, alpha_star1_unbiased.item(), alpha_star_b2_biased.item(), current_lr]
 
     # Check if the file exists and write a header if needed
     try:
@@ -614,7 +661,7 @@ def update_params(workload: spec.Workload,
     # Construct the full path to the log file
     log_file_path = os.path.join(log_dir, 'alpha_star_scaled_log.csv')
 
-    log_data = [global_step, alpha_star1.item()*current_lr, alpha_star_b2.item()*current_lr, current_lr]
+    log_data = [global_step, alpha_star1_unbiased.item()*current_lr, alpha_star_b2_biased.item()*current_lr, current_lr]
 
     # Check if the file exists and write a header if needed
 
@@ -644,8 +691,8 @@ def update_params(workload: spec.Workload,
     log_file_path = os.path.join(log_dir, 'alpha_star_numerators_denominators_log.csv')
 
     log_data = [global_step, 
-                alpha_star1.item(), dg1.item(), dGGNd_1.item(), cosine_1.item(),
-                alpha_star_b2.item(), dg_b2.item(), dGGNd_b2.item(), cosine_b2.item(),
+                alpha_star1_unbiased.item(), dg1.item(), dGGNd_1.item(), cosine_1.item(),
+                alpha_star_b2_biased.item(), dg_b2.item(), dGGNd_b2.item(), cosine_b2.item(),
                     current_lr]
     
     # Check if the file exists and write a header if needed
@@ -698,13 +745,13 @@ def update_params(workload: spec.Workload,
       # Construct the full path to the log file
       log_file_path = os.path.join(log_dir, 'timing_log.csv')
 
-      log_data = [global_step, time_ggn_b1, alpha_step_time]
+      log_data = [global_step, time_ggn_b1, alpha_step_time, ""]
 
       # Check if the file exists and write a header if needed
       try:
           with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
               writer = csv.writer(log_file)
-              writer.writerow(["Global step", "GGN time B1", "Alpha step time"
+              writer.writerow(["Global step", "GGN time B1", "Alpha step time", "Normal step time"
                               ])  # Write header
       except FileExistsError:
           pass
@@ -722,7 +769,7 @@ def update_params(workload: spec.Workload,
         alpha_values = []
 
       # sum alpha values scaled by the learning rate
-      alpha_values.append(alpha_star1 * current_lr)  # Store as tensors directly
+      alpha_values.append(alpha_star1_unbiased * current_lr)  # Store as tensors directly
 
       # after 50 alphas were added, calculate the average and print it
       if global_step % comp_alphas_each == num_consec_alphas - 1 and global_step > comp_alphas_each:
@@ -751,17 +798,17 @@ def update_params(workload: spec.Workload,
 def get_batch_size(workload_name):
   # Return the global batch size.
   if workload_name == 'criteo1tb':
-    return int(262_144/8)  # 2x the batch size for the two halves,divide by 8 for using only one instead of 8 a100 GPUs (compared to AlgoPerf comptetion)
+    return int(262_144/8 * 2)  # 2x the batch size for the two halves,divide by 8 for using only one instead of 8 a100 GPUs (compared to AlgoPerf comptetion)
   elif workload_name == 'fastmri':
     return 32
   elif workload_name == 'imagenet_resnet':
-    return 1024
+    return int(1024/8 * 2)  # 2x the batch size for the two halves, divide by 8 for using only one instead of 8 a100 GPUs (compared to AlgoPerf comptetion)
   elif workload_name == 'imagenet_resnet_silu':
     return 512
   elif workload_name == 'imagenet_resnet_gelu':
     return 512
   elif workload_name == 'imagenet_vit':
-    return 1024
+    return int(1024/8 * 2)  # 2x the batch size for the two halves, divide by 8 for using only one instead of 8 a100 GPUs (compared to AlgoPerf comptetion)
   elif workload_name == 'librispeech_conformer':
     return 256
   elif workload_name == 'librispeech_deepspeech':
