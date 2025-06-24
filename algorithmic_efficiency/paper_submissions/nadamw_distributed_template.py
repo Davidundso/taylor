@@ -310,7 +310,8 @@ def update_params(workload: spec.Workload,
   comp_alphas_each = 1000
   start_comp_alpha = 50             # earliest alpha computations: If set to zero alpha is computed for the first num_consec_alphas steps 
   timing = True                    # if timings should be printed
-  workload_name = 'criteo1tb'      # enum: criteo1tb, imagenet_resnet, imagenet_vit
+  #workload_name = 'criteo1tb'      # enum: criteo1tb, imagenet_resnet, imagenet_vit
+  workload_name = 'imagenet_resnet'  
   use_median_alpha = False         # if True, use the median of the last num_consec_alphas alphas to set the learning rate
 
 
@@ -329,8 +330,11 @@ def update_params(workload: spec.Workload,
     batch = {
         'inputs': batch['inputs'][:half_batch_size],
         'targets': batch['targets'][:half_batch_size],
-        'weights': batch.get('weights')[:half_batch_size],
+        
     }
+    if batch.get('weights') is not None:
+      batch['weights'] = batch['weights'][:half_batch_size]
+
 
     current_model = current_param_container
     current_model.train()
@@ -466,7 +470,11 @@ def update_params(workload: spec.Workload,
     Data_b1 = [(inputs1.to(DEVICE), targets1.view(-1,1).to(DEVICE))] # criteo needs the targets like this (due to custom forward function)
   
   if workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
-    Data_b1 = [(inputs1.to(device), targets1.to(device))]
+    Data_b1 = [(inputs1.to(DEVICE), targets1.to(DEVICE))]
+
+  print("memory allocated before GGN 1:", torch.cuda.memory_allocated(device=DEVICE) / 1024**2, "MiB")
+  print("memory reserved before GGN 1:", torch.cuda.memory_reserved(device=DEVICE) / 1024**2, "MiB")
+  print("memory max allocated before GGN 1:", torch.cuda.max_memory_allocated(device=DEVICE) / 1024**2, "MiB")
 
   if timing:
     start_ggn_b1 = time.time()
@@ -476,7 +484,12 @@ def update_params(workload: spec.Workload,
   GGN_b1_combined = DistributedGGN(GGN_b1, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction 
   # Data1 not used anymore, so we can delete it (saves memory)
   del Data_b1
-  
+  torch.cuda.empty_cache()      # possibly free up memory after GGN computation
+
+  print("memory after GGN 1:", torch.cuda.memory_allocated(device=DEVICE) / 1024**2, "MiB")
+  print("memory reserved after GGN 1:", torch.cuda.memory_reserved(device=DEVICE) / 1024**2, "MiB")
+  print("memory max allocated after GGN 1:", torch.cuda.max_memory_allocated(device=DEVICE) / 1024**2, "MiB")
+
   if timing:
     time_ggn_b1 = time.time() - start_ggn_b1
   # set to train mode before step
@@ -512,6 +525,11 @@ def update_params(workload: spec.Workload,
   gradients_b1 = parameters_to_vector(param.grad for param in current_model.parameters() if param.grad is not None) # extract the gradient
   gradients_norm_b1 = torch.norm(gradients_b1, 2)
 
+  # Clean up to free GPU memory before second GGN
+  del logits_batch1, new_model_state1, targets1, inputs1
+  torch.cuda.empty_cache()
+
+
   # Gradient clipping for the first half
   if grad_clip is not None:
     torch.nn.utils.clip_grad_norm_(current_model.parameters(), max_norm=grad_clip)
@@ -528,13 +546,21 @@ def update_params(workload: spec.Workload,
     Data_b2 = [(inputs2.to(DEVICE), targets2.view(-1,1).to(DEVICE))] 
 
   if workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
-    Data_b1 = [(inputs2.to(device), targets2.to(device))]
+    Data_b2 = [(inputs2.to(DEVICE), targets2.to(DEVICE))]
+  
+  current_model.eval()  # set to evaluation mode before GGN
+  
+  print("memory before GGN 2:", torch.cuda.memory_allocated(device=DEVICE) / 1024**2, "MiB")
+  print("memory reserved before GGN 2:", torch.cuda.memory_reserved(device=DEVICE) / 1024**2, "MiB")
+  print("memory max allocated before GGN 2:", torch.cuda.max_memory_allocated(device=DEVICE) / 1024**2, "MiB")
 
   GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
+
   # construct combined GGN
   GGN_b2_combined = DistributedGGN(GGN_b2, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction
   # Data2 not used anymore, so we can delete it (saves memory)
   del Data_b2
+  torch.cuda.empty_cache()
   
 
 
@@ -576,6 +602,7 @@ def update_params(workload: spec.Workload,
   optimizer_state['optimizer'].step()
   # step the scheduler (only do this if you don't use your own curvature-based learning rate)
   optimizer_state['scheduler'].step()
+
 
   theta_1_b2 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad])
 
@@ -798,17 +825,17 @@ def update_params(workload: spec.Workload,
 def get_batch_size(workload_name):
   # Return the global batch size.
   if workload_name == 'criteo1tb':
-    return int(262_144/8 * 2)  # 2x the batch size for the two halves,divide by 8 for using only one instead of 8 a100 GPUs (compared to AlgoPerf comptetion)
+    return int(262_144/4 * 2)  # divide depending on the number of GPUs used, times 2 for the two halves of the batch
   elif workload_name == 'fastmri':
     return 32
   elif workload_name == 'imagenet_resnet':
-    return int(1024/8 * 2)  # 2x the batch size for the two halves, divide by 8 for using only one instead of 8 a100 GPUs (compared to AlgoPerf comptetion)
+    return int(1024/8 * 2)  
   elif workload_name == 'imagenet_resnet_silu':
     return 512
   elif workload_name == 'imagenet_resnet_gelu':
     return 512
   elif workload_name == 'imagenet_vit':
-    return int(1024/8 * 2)  # 2x the batch size for the two halves, divide by 8 for using only one instead of 8 a100 GPUs (compared to AlgoPerf comptetion)
+    return int(1024/8 * 2) 
   elif workload_name == 'librispeech_conformer':
     return 256
   elif workload_name == 'librispeech_deepspeech':
