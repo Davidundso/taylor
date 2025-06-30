@@ -21,13 +21,14 @@ import torch.nn as nn
 import csv
 # timing
 import time
+import gc
 
 USE_PYTORCH_DDP, RANK, DEVICE, N_GPUS = pytorch_setup()
 # To change the lr schedule: (1) Change the learning rate appropriately to make it e.g. smaller
 # (2) then change the step hint: an e.g. 4x smaller lr means 4x more steps are needed
 HPARAMS = {
     "dropout_rate": 0.1,
-    "learning_rate": 0.0017486387539278373 / 8,      # make lr 8 times smaller for using only one instead of 8 a100 GPUs (compared to AlgoPerf comptetion)
+    "learning_rate": 0.0017486387539278373 / 8 * N_GPUS,      # make lr 8 times smaller for using only one instead of 8 a100 GPUs (compared to AlgoPerf comptetion)
     "one_minus_beta1": 0.06733926164,
     "beta2": 0.9955159689799007,
     "weight_decay": 0.08121616522670176,
@@ -239,7 +240,7 @@ def init_optimizer_state(workload: spec.Workload,
           optimizer, schedulers=[warmup, cosine_decay], milestones=[warmup_steps])
 
   optimizer_state['scheduler'] = pytorch_cosine_warmup(
-      workload.step_hint * 8, hyperparameters, optimizer_state['optimizer'])  
+      workload.step_hint * (8 / N_GPUS), hyperparameters, optimizer_state['optimizer'])  
 
   return optimizer_state
 
@@ -308,10 +309,11 @@ def update_params(workload: spec.Workload,
 
   num_consec_alphas = 100
   comp_alphas_each = 1000
-  start_comp_alpha = 50             # earliest alpha computations: If set to zero alpha is computed for the first num_consec_alphas steps 
+  start_comp_alpha = 0            # earliest alpha computations: If set to zero alpha is computed for the first num_consec_alphas steps 
   timing = True                    # if timings should be printed
   #workload_name = 'criteo1tb'      # enum: criteo1tb, imagenet_resnet, imagenet_vit
-  workload_name = 'imagenet_resnet'  
+  #workload_name = 'imagenet_resnet' 
+  workload_name = 'imagenet_vit' 
   use_median_alpha = False         # if True, use the median of the last num_consec_alphas alphas to set the learning rate
 
 
@@ -401,12 +403,12 @@ def update_params(workload: spec.Workload,
     
     if timing:
       if workload_name == 'criteo1tb':
-        log_dir = os.path.expandvars("$WORK/paper_experiments/test1_criteo")
+        log_dir = os.path.expandvars("$WORK/paper_experiments/exp1_criteo")
       elif workload_name == 'imagenet_resnet':
-        log_dir = os.path.expandvars("$WORK/paper_experiments/test1_imagenet_resnet")
+        log_dir = os.path.expandvars("$WORK/paper_experiments/exp1_imagenet_resnet")
       elif workload_name == 'imagenet_vit':
-        log_dir = os.path.expandvars("$WORK/paper_experiments/test1_imagenet_vit")
-    
+        log_dir = os.path.expandvars("$WORK/paper_experiments/exp1_imagenet_vit")
+
       # Ensure the directory exists
       os.makedirs(log_dir, exist_ok=True)
 
@@ -472,9 +474,6 @@ def update_params(workload: spec.Workload,
   if workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
     Data_b1 = [(inputs1.to(DEVICE), targets1.to(DEVICE))]
 
-  print("memory allocated before GGN 1:", torch.cuda.memory_allocated(device=DEVICE) / 1024**2, "MiB")
-  print("memory reserved before GGN 1:", torch.cuda.memory_reserved(device=DEVICE) / 1024**2, "MiB")
-  print("memory max allocated before GGN 1:", torch.cuda.max_memory_allocated(device=DEVICE) / 1024**2, "MiB")
 
   if timing:
     start_ggn_b1 = time.time()
@@ -483,16 +482,34 @@ def update_params(workload: spec.Workload,
   # construct combined GGN
   GGN_b1_combined = DistributedGGN(GGN_b1, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction 
   # Data1 not used anymore, so we can delete it (saves memory)
+
+
   del Data_b1
   torch.cuda.empty_cache()      # possibly free up memory after GGN computation
-
-  print("memory after GGN 1:", torch.cuda.memory_allocated(device=DEVICE) / 1024**2, "MiB")
-  print("memory reserved after GGN 1:", torch.cuda.memory_reserved(device=DEVICE) / 1024**2, "MiB")
-  print("memory max allocated after GGN 1:", torch.cuda.max_memory_allocated(device=DEVICE) / 1024**2, "MiB")
 
   if timing:
     time_ggn_b1 = time.time() - start_ggn_b1
   # set to train mode before step
+
+  # compute ggn
+  if workload_name == 'criteo1tb':
+    Data_b2 = [(inputs2.to(DEVICE), targets2.view(-1,1).to(DEVICE))] 
+
+  if workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
+    Data_b2 = [(inputs2.to(DEVICE), targets2.to(DEVICE))]
+  
+  current_model.eval()  # set to evaluation mode before GGN
+  
+
+  GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
+
+  # construct combined GGN
+  GGN_b2_combined = DistributedGGN(GGN_b2, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction
+  # Data2 not used anymore, so we can delete it (saves memory)
+
+  del Data_b2
+  torch.cuda.empty_cache()
+
   current_model.train()
 
   logits_batch1, new_model_state1 = workload.model_fn(
@@ -541,29 +558,6 @@ def update_params(workload: spec.Workload,
   # Second half
   optimizer_state['optimizer'].zero_grad()
   
-  # compute ggn
-  if workload_name == 'criteo1tb':
-    Data_b2 = [(inputs2.to(DEVICE), targets2.view(-1,1).to(DEVICE))] 
-
-  if workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
-    Data_b2 = [(inputs2.to(DEVICE), targets2.to(DEVICE))]
-  
-  current_model.eval()  # set to evaluation mode before GGN
-  
-  print("memory before GGN 2:", torch.cuda.memory_allocated(device=DEVICE) / 1024**2, "MiB")
-  print("memory reserved before GGN 2:", torch.cuda.memory_reserved(device=DEVICE) / 1024**2, "MiB")
-  print("memory max allocated before GGN 2:", torch.cuda.max_memory_allocated(device=DEVICE) / 1024**2, "MiB")
-
-  GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
-
-  # construct combined GGN
-  GGN_b2_combined = DistributedGGN(GGN_b2, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction
-  # Data2 not used anymore, so we can delete it (saves memory)
-  del Data_b2
-  torch.cuda.empty_cache()
-  
-
-
   logits_batch2, new_model_state2 = workload.model_fn(
       params=current_model,
       augmented_and_preprocessed_input_batch={'inputs': inputs2, 'targets': targets2},
@@ -652,11 +646,11 @@ def update_params(workload: spec.Workload,
     current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
     # log the values of alpha_star1_unbiased, alpha_star2, alpha_star_b1, alpha_star_b2_biased into a csv file
     if workload_name == 'criteo1tb':
-      log_dir = os.path.expandvars("$WORK/paper_experiments/test1_criteo")
+      log_dir = os.path.expandvars("$WORK/paper_experiments/exp1_criteo")
     elif workload_name == 'imagenet_resnet':
-      log_dir = os.path.expandvars("$WORK/paper_experiments/test1_imagenet_resnet")
+      log_dir = os.path.expandvars("$WORK/paper_experiments/exp1_imagenet_resnet")
     elif workload_name == 'imagenet_vit':
-      log_dir = os.path.expandvars("$WORK/paper_experiments/test1_imagenet_vit")
+      log_dir = os.path.expandvars("$WORK/paper_experiments/exp1_imagenet_vit")
 
     # Ensure the directory exists
     os.makedirs(log_dir, exist_ok=True)
@@ -825,11 +819,11 @@ def update_params(workload: spec.Workload,
 def get_batch_size(workload_name):
   # Return the global batch size.
   if workload_name == 'criteo1tb':
-    return int(262_144/4 * 2)  # divide depending on the number of GPUs used, times 2 for the two halves of the batch
+    return int(262_144/8 * 2 * N_GPUS)  # original batch size / 8 (original number of GPUs) * 2 (for two halves) * 2 (for two GPUs)
   elif workload_name == 'fastmri':
     return 32
   elif workload_name == 'imagenet_resnet':
-    return int(1024/8 * 2)  
+    return int(1024/8 * 2 * N_GPUS)  # original batch size / 8 (original number of GPUs) * 2 (for two halves) * 2 (for two GPUs)
   elif workload_name == 'imagenet_resnet_silu':
     return 512
   elif workload_name == 'imagenet_resnet_gelu':
