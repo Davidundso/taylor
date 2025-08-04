@@ -322,7 +322,7 @@ def update_params(workload: spec.Workload,
   use_median_alpha = False         # if True, use the median of the last num_consec_alphas alphas to set the learning rate
 
   # log: num of devices, batch size, learning rate, max number of steps, workload name
-  if global_step == 0:
+  if global_step == 0 or global_step % 1000 == 0:
     logging.info('Using %d GPUs', N_GPUS)
     logging.info('Per GPU batch size before halving: %d', batch['inputs'].size(0))
     logging.info('Batch size from batch size fn: %d', get_batch_size(workload_name))

@@ -329,8 +329,9 @@ def train_once(
   logging.info('Starting training loop.')
   goals_reached = (
       train_state['validation_goal_reached'] and
-      train_state['test_goal_reached'])
-  while train_state['is_time_remaining'] and \
+      train_state['test_goal_reached']) # BELOW: setting stopping condition to be independent of total time
+  #while train_state['is_time_remaining'] and \
+  while True and \
       not goals_reached and \
       not train_state['training_complete']:
 
