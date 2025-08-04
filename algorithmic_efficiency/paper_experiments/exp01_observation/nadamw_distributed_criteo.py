@@ -682,6 +682,25 @@ def update_params(workload: spec.Workload,
         writer = csv.writer(log_file)
         writer.writerow(log_data)
 
+    # safety precaution: Every 1000 steps log num_gpus, batch size from batch fn, batch size from inputs into a csv file named "batch_size_log.csv"
+    if global_step % 1000 == 0:
+        # Ensure the directory exists
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Construct the full path to the log file
+        log_file_path = os.path.join(log_dir, 'batch_size_log.csv')
+
+        log_data = [global_step, N_GPUS, batch['inputs'].size(0), get_batch_size(workload_name)]
+
+        # Check if the file exists and write a header if needed
+        try:
+            with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
+                writer = csv.writer(log_file)
+                writer.writerow(["Global step", "Num GPUs", "Batch size from inputs", "Batch size from batch size fn"
+                                ])  # Write header              
+        except FileExistsError:
+            pass
+
     # log the same values but each multiplied by the learning rate into a new file alpha_star_scaled_log.csv
 
     # Ensure the directory exists
