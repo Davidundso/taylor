@@ -317,7 +317,7 @@ def update_params(workload: spec.Workload,
   use_median_alpha = False         # if True, use the median of the last num_consec_alphas alphas to set the learning rate
 
   # log: num of devices, batch size, learning rate, max number of steps, workload name
-  if global_step == 0:
+  if global_step == 0 or global_step % 1000 == 0:
     logging.info('Using %d GPUs', N_GPUS)
     logging.info('Per GPU batch size before halving: %d', batch['inputs'].size(0))
     logging.info('Batch size from batch size fn: %d', get_batch_size(workload_name))
@@ -489,7 +489,7 @@ def update_params(workload: spec.Workload,
   if timing:
     start_ggn_b1 = time.time()
   # GGN on each device
-  GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1)
+  GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1, check_deterministic=False)  # GGN on each device
   # construct combined GGN
   GGN_b1_combined = DistributedGGN(GGN_b1, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction 
   # Data1 not used anymore, so we can delete it (saves memory)
@@ -512,7 +512,7 @@ def update_params(workload: spec.Workload,
   current_model.eval()  # set to evaluation mode before GGN
   
 
-  GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
+  GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2, check_deterministic=False)  # GGN on each device
 
   # construct combined GGN
   GGN_b2_combined = DistributedGGN(GGN_b2, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction

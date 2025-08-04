@@ -24,6 +24,11 @@ import time
 import gc
 
 USE_PYTORCH_DDP, RANK, DEVICE, N_GPUS = pytorch_setup()
+# Problem: Now the function pytorch_setup() sees all available GPUs on the node.
+# E.g. 2 in process but 8 on node -> sets N_GPUS to 8.
+# Solution: Set N_GPUS manually
+N_GPUS = 2
+
 # To change the lr schedule: (1) Change the learning rate appropriately to make it e.g. smaller
 # (2) then change the step hint: an e.g. 4x smaller lr means 4x more steps are needed
 HPARAMS = {
@@ -324,9 +329,9 @@ def update_params(workload: spec.Workload,
     logging.info('Learning rate: %f', HPARAMS['learning_rate'])
     logging.info('Max number of steps: %d', workload.step_hint * (8 / N_GPUS))
     logging.info('Workload name: %s', workload_name)
-    
-
-
+    # log number of params in the model
+    num_params = sum(p.numel() for p in current_param_container.parameters() if p.requires_grad)
+    logging.info('Number of trainable parameters: %d', num_params)
 
   # do a normal step for most steps (using one half of the batch)
   if global_step % comp_alphas_each >= num_consec_alphas or global_step < start_comp_alpha:
@@ -407,65 +412,95 @@ def update_params(workload: spec.Workload,
                   global_step,
                   loss.item(),
                   grad_norm.item())
-      
+
     if timing:
-    time_normal_step = time.time() - start_normal_step
+        time_normal_step = time.time() - start_normal_step
 
-if RANK == 0:  # log only on rank 0
-    if timing:
-        if workload_name == 'criteo1tb':
-            log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_criteo_time")
-        elif workload_name == 'imagenet_resnet':
-            log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_resnet_time")
-        elif workload_name == 'imagenet_vit':
-            log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_vit_time")
+    if RANK == 0:  # log only on rank 0
+        if timing:
+            if workload_name == 'criteo1tb':
+                log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_criteo_time")
+            elif workload_name == 'imagenet_resnet':
+                log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_resnet_time")
+            elif workload_name == 'imagenet_vit':
+                log_dir = os.path.expandvars("$WORK/paper_experiments/test_time_imagenet_vit")
 
-        # Ensure the directory exists
-        os.makedirs(log_dir, exist_ok=True)
+            # Ensure the directory exists
+            os.makedirs(log_dir, exist_ok=True)
 
-        # Construct the full path to the log file
-        log_file_path = os.path.join(log_dir, 'timing_log.csv')
+            # Construct the full path to the log file
+            log_file_path = os.path.join(log_dir, 'timing_log.csv')
 
-        log_data = [
-            global_step,
-            "",  # time_model_data_prep
-            "",  # time_ggn_b1
-            "",  # time_forward_loss_backward_b1
-            "",  # time_grad_clip_b1
-            "",  # time_ggn_b2
-            "",  # time_forward_loss_backward_b2
-            "",  # time_grad_clip_b2
-            "",  # time_optimizer_step
-            "",  # time_alpha_computation
-            "",  # alpha_step_time
-            time_normal_step  # ← this is the only non-empty field for the normal step
-        ]
+            log_data = [
+                global_step,
+                "",  # time_model_data_prep
+                "",  # time_ggn_b1
+                "",  # time_forward_loss_backward_b1
+                "",  # time_grad_clip_b1
+                "",  # time_ggn_b2
+                "",  # time_forward_loss_backward_b2
+                "",  # time_grad_clip_b2
+                "",  # time_optimizer_step
+                "",  # time_alpha_computation
+                "",  # alpha_step_time
+                time_normal_step,  # ← this is the only non-empty field for the normal step
+                "",  # time_data_prep_b1
+                "",  # time_data_prep_b2
+                "",  # time_ggn_create_b1
+                "",  # time_ggn_create_b2
+                "",  # time_forward_b1
+                "",  # time_loss_b1
+                "",  # time_backward_b1
+                "",  # time_forward_b2
+                "",  # time_loss_b2
+                "",  # time_backward_b2
+                "",  # time_ggn_matmul_b1
+                "",  # time_ggn_matmul_b2
+                "",  # time_dot_products
+                "",  # time_alpha_calculation
+                "",  # time_params_to_vec_b2
+            ]
 
-        # Check if the file exists and write a header if needed
-        try:
-            with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
+            # Check if the file exists and write a header if needed
+            try:
+                with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
+                    writer = csv.writer(log_file)
+                    writer.writerow([
+                        "Global step",
+                        "Model/data prep",
+                        "GGN time B1",
+                        "Fwd/loss/backward B1",
+                        "Grad clip B1",
+                        "GGN time B2",
+                        "Fwd/loss/backward B2",
+                        "Grad clip B2",
+                        "Optimizer step",
+                        "Alpha computation",
+                        "Alpha step time",
+                        "Normal step time",
+                        "Data prep B1",
+                        "Data prep B2", 
+                        "GGN create B1",
+                        "GGN create B2",
+                        "Forward B1",
+                        "Loss B1",
+                        "Backward B1",
+                        "Forward B2",
+                        "Loss B2",
+                        "Backward B2",
+                        "GGN matmul B1",
+                        "GGN matmul B2",
+                        "Dot products",
+                        "Alpha calculation",
+                        "Memory cleanup"
+                    ])
+            except FileExistsError:
+                pass
+
+            # Append the log data
+            with open(log_file_path, 'a') as log_file:
                 writer = csv.writer(log_file)
-                writer.writerow([
-                    "Global step",
-                    "Model/data prep",
-                    "GGN time B1",
-                    "Fwd/loss/backward B1",
-                    "Grad clip B1",
-                    "GGN time B2",
-                    "Fwd/loss/backward B2",
-                    "Grad clip B2",
-                    "Optimizer step",
-                    "Alpha computation",
-                    "Alpha step time",
-                    "Normal step time"
-                ])
-        except FileExistsError:
-            pass
-
-        # Append the log data
-        with open(log_file_path, 'a') as log_file:
-            writer = csv.writer(log_file)
-            writer.writerow(log_data)
+                writer.writerow(log_data)
     
 
     return (optimizer_state, current_param_container, new_model_state)
@@ -475,6 +510,34 @@ if RANK == 0:  # log only on rank 0
   if timing:
     start_time_alpha_step = time.time()
     t_checkpoint = time.time()
+  else:
+    # Initialize timing variables to avoid NameError
+    start_time_alpha_step = 0
+    time_model_data_prep = 0
+    time_data_prep_b1 = 0
+    time_data_prep_b2 = 0
+    time_ggn_create_b1 = 0
+    time_ggn_create_b2 = 0
+    time_ggn_b1 = 0
+    time_ggn_b2 = 0
+    time_forward_b1 = 0
+    time_loss_b1 = 0
+    time_backward_b1 = 0
+    time_forward_b2 = 0
+    time_loss_b2 = 0
+    time_backward_b2 = 0
+    time_forward_loss_backward_b1 = 0
+    time_grad_clip_b1 = 0
+    time_forward_loss_backward_b2 = 0
+    time_grad_clip_b2 = 0
+    time_optimizer_step = 0
+    time_alpha_computation = 0
+    time_ggn_matmul_b1 = 0
+    time_ggn_matmul_b2 = 0
+    time_dot_products = 0
+    time_alpha_calculation = 0
+    time_params_to_vec_b2 = 0
+    alpha_step_time = 0
 
   # Get loss function
   loss_fn = get_loss_function(workload.loss_type)  # get torch loss function for GGN
@@ -494,46 +557,81 @@ if RANK == 0:  # log only on rank 0
   inputs1, inputs2 = inputs[:half_batch_size], inputs[half_batch_size:]
   targets1, targets2 = targets[:half_batch_size], targets[half_batch_size:]
 
-  if timing:
-      time_model_data_prep = time.time() - t_checkpoint
-      t_checkpoint = time.time()
+  
 
   if global_step == 0:
       print("Using device:", DEVICE)
 
   optimizer_state['optimizer'].zero_grad()
 
+  # Data preparation for batch 1
+  if timing:
+      t_data_prep_b1_start = time.time()
+  
   if workload_name == 'criteo1tb':
       Data_b1 = [(inputs1.to(DEVICE), targets1.view(-1,1).to(DEVICE))]
   elif workload_name in ['imagenet_resnet', 'imagenet_vit']:
       Data_b1 = [(inputs1.to(DEVICE), targets1.to(DEVICE))]
-
-  GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1)
-  GGN_b1_combined = DistributedGGN(GGN_b1, reduction='mean', N_GPUS=N_GPUS)
-
-  del Data_b1
-  torch.cuda.empty_cache()
+  
+  current_model.eval()
 
   if timing:
-      time_ggn_b1 = time.time() - t_checkpoint
+      time_data_prep_b1 = time.time() - t_data_prep_b1_start
+      time_model_data_prep = time.time() - t_checkpoint
       t_checkpoint = time.time()
 
-  # GGN B2 data
+  # GGN creation for batch 1
+  if timing:
+      t_ggn_create_b1_start = time.time()
+  
+  GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1, check_deterministic=False)
+  GGN_b1_combined = DistributedGGN(GGN_b1, reduction='mean', N_GPUS=N_GPUS)
+  
+  if timing:
+      time_ggn_create_b1 = time.time() - t_ggn_create_b1_start
+  
+  del Data_b1
+
+  
+
+  # GGN B2 data preparation
+  if timing:
+      t_data_prep_b2_start = time.time()
+  
   if workload_name == 'criteo1tb':
       Data_b2 = [(inputs2.to(DEVICE), targets2.view(-1,1).to(DEVICE))]
   elif workload_name in ['imagenet_resnet', 'imagenet_vit']:
       Data_b2 = [(inputs2.to(DEVICE), targets2.to(DEVICE))]
-
   current_model.eval()
 
-  GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
+  if timing:
+      time_data_prep_b2 = time.time() - t_data_prep_b2_start
+
+  
+
+  if timing:
+      time_ggn_b1 = time.time() - t_checkpoint
+      t_checkpoint = time.time()
+      t_ggn_create_b2_start = time.time()
+
+  # GGN creation for batch 2
+  GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2, check_deterministic=False)
   GGN_b2_combined = DistributedGGN(GGN_b2, reduction='mean', N_GPUS=N_GPUS)
 
+  if timing:
+      time_ggn_create_b2 = time.time() - t_ggn_create_b2_start
+
   del Data_b2
-  torch.cuda.empty_cache()
   current_model.train()
 
+  if timing:
+      time_ggn_b2 = time.time() - t_checkpoint
+      t_checkpoint = time.time()
+
   # Forward/loss/backward for batch 1
+  if timing:
+      t_forward_b1_start = time.time()
+  
   logits_batch1, new_model_state1 = workload.model_fn(
       params=current_model,
       augmented_and_preprocessed_input_batch={'inputs': inputs1, 'targets': targets1},
@@ -541,6 +639,10 @@ if RANK == 0:  # log only on rank 0
       mode=spec.ForwardPassMode.TRAIN,
       rng=rng,
       update_batch_norm=True)
+
+  if timing:
+      time_forward_b1 = time.time() - t_forward_b1_start
+      t_loss_b1_start = time.time()
 
   label_smoothing = getattr(hyperparameters, 'label_smoothing', 0.0)
   grad_clip = getattr(hyperparameters, 'grad_clip', None)
@@ -556,9 +658,15 @@ if RANK == 0:  # log only on rank 0
       summed_loss1 = dist_nn.all_reduce(summed_loss1)
       n_valid_examples1 = dist_nn.all_reduce(n_valid_examples1)
   loss1 = summed_loss1 / n_valid_examples1
+  
+  if timing:
+      time_loss_b1 = time.time() - t_loss_b1_start
+      t_backward_b1_start = time.time()
+  
   loss1.backward()
 
   if timing:
+      time_backward_b1 = time.time() - t_backward_b1_start
       time_forward_loss_backward_b1 = time.time() - t_checkpoint
       t_checkpoint = time.time()
 
@@ -581,6 +689,9 @@ if RANK == 0:  # log only on rank 0
   optimizer_state['optimizer'].zero_grad()
 
   # Forward/loss/backward for batch 2
+  if timing:
+      t_forward_b2_start = time.time()
+  
   logits_batch2, new_model_state2 = workload.model_fn(
       params=current_model,
       augmented_and_preprocessed_input_batch={'inputs': inputs2, 'targets': targets2},
@@ -588,6 +699,10 @@ if RANK == 0:  # log only on rank 0
       mode=spec.ForwardPassMode.TRAIN,
       rng=rng,
       update_batch_norm=True)
+
+  if timing:
+      time_forward_b2 = time.time() - t_forward_b2_start
+      t_loss_b2_start = time.time()
 
   label_smoothing = getattr(hyperparameters, 'label_smoothing', 0.0)
   grad_clip = getattr(hyperparameters, 'grad_clip', None)
@@ -604,9 +719,15 @@ if RANK == 0:  # log only on rank 0
       n_valid_examples2 = dist_nn.all_reduce(n_valid_examples2)
 
   loss2 = summed_loss2 / n_valid_examples2
+  
+  if timing:
+      time_loss_b2 = time.time() - t_loss_b2_start
+      t_backward_b2_start = time.time()
+  
   loss2.backward()
 
   if timing:
+      time_backward_b2 = time.time() - t_backward_b2_start
       time_forward_loss_backward_b2 = time.time() - t_checkpoint
       t_checkpoint = time.time()
 
@@ -626,21 +747,41 @@ if RANK == 0:  # log only on rank 0
   if timing:
       time_optimizer_step = time.time() - t_checkpoint
       t_checkpoint = time.time()
+      t_params_to_vec_b2_start = time.time()
 
   theta_1_b2 = parameters_to_vector([param.detach().clone() for param in current_param_container.parameters() if param.requires_grad])
   d_unnormalized_b2 = theta_1_b2 - theta_0_b2
 
+  if timing:
+      time_params_to_vec_b2 = time.time() - t_params_to_vec_b2_start
+      t_ggn_matmul_start = time.time()
+
   GGNd1 = GGN_b1_combined @ d_unnormalized_b2
+  
+  if timing:
+      time_ggn_matmul_b1 = time.time() - t_ggn_matmul_start
+      t_ggn_matmul_b2_start = time.time()
+  
+  GGNd_b2 = GGN_b2_combined @ d_unnormalized_b2
+  
+  if timing:
+      time_ggn_matmul_b2 = time.time() - t_ggn_matmul_b2_start
+      t_dot_products_start = time.time()
+  
   dGGNd_1 = torch.dot(GGNd1, d_unnormalized_b2)
   dg1 = - torch.dot(gradients_b1, d_unnormalized_b2)
-  alpha_star1_unbiased = dg1 / dGGNd_1
-
-  GGNd_b2 = GGN_b2_combined @ d_unnormalized_b2
   dGGNd_b2 = torch.dot(GGNd_b2, d_unnormalized_b2)
   dg_b2 = - torch.dot(gradients_b2, d_unnormalized_b2)
+  
+  if timing:
+      time_dot_products = time.time() - t_dot_products_start
+      t_alpha_calc_start = time.time()
+  
+  alpha_star1_unbiased = dg1 / dGGNd_1
   alpha_star_b2_biased = dg_b2 / dGGNd_b2
 
   if timing:
+      time_alpha_calculation = time.time() - t_alpha_calc_start
       time_alpha_computation = time.time() - t_checkpoint
       alpha_step_time = time.time() - start_time_alpha_step
 
@@ -672,7 +813,7 @@ if RANK == 0:  # log only on rank 0
     elif workload_name == 'imagenet_resnet':
       log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_resnet_time")
     elif workload_name == 'imagenet_vit':
-      log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_vit_time")
+      log_dir = os.path.expandvars("$WORK/paper_experiments/test_time_imagenet_vit")
 
     # Ensure the directory exists
     os.makedirs(log_dir, exist_ok=True)
@@ -815,7 +956,6 @@ if RANK == 0:  # log only on rank 0
 
       log_data = [
           global_step,
-          time_loss_setup,
           time_model_data_prep,
           time_ggn_b1,
           time_forward_loss_backward_b1,
@@ -826,7 +966,22 @@ if RANK == 0:  # log only on rank 0
           time_optimizer_step,
           time_alpha_computation,
           alpha_step_time,
-          ""  # placeholder for normal step time if needed
+          "",  # placeholder for normal step time
+          time_data_prep_b1,
+          time_data_prep_b2,
+          time_ggn_create_b1,
+          time_ggn_create_b2,
+          time_forward_b1,
+          time_loss_b1,
+          time_backward_b1,
+          time_forward_b2,
+          time_loss_b2,
+          time_backward_b2,
+          time_ggn_matmul_b1,
+          time_ggn_matmul_b2,
+          time_dot_products,
+          time_alpha_calculation,
+          time_params_to_vec_b2
       ]
 
       try:
@@ -834,7 +989,6 @@ if RANK == 0:  # log only on rank 0
               writer = csv.writer(log_file)
               writer.writerow([
                   "Global step",
-                  "Loss setup",
                   "Model/data prep",
                   "GGN time B1",
                   "Fwd/loss/backward B1",
@@ -845,34 +999,26 @@ if RANK == 0:  # log only on rank 0
                   "Optimizer step",
                   "Alpha computation",
                   "Alpha step time",
-                  "Normal step time"
+                  "Normal step time",
+                  "Data prep B1",
+                  "Data prep B2",
+                  "GGN create B1", 
+                  "GGN create B2",
+                  "Forward B1",
+                  "Loss B1",
+                  "Backward B1",
+                  "Forward B2",
+                  "Loss B2",
+                  "Backward B2",
+                  "GGN matmul B1",
+                  "GGN matmul B2",
+                  "Dot products",
+                  "Alpha calculation",
+                  "params to vec b2"
               ])
       except FileExistsError:
           pass
 
-      with open(log_file_path, 'a') as log_file:
-          writer = csv.writer(log_file)
-          writer.writerow(log_data)
-
-    if timing:
-      # Ensure the directory exists
-      os.makedirs(log_dir, exist_ok=True)
-
-      # Construct the full path to the log file
-      log_file_path = os.path.join(log_dir, 'timing_log.csv')
-
-      log_data = [global_step, time_ggn_b1, alpha_step_time, ""]
-
-      # Check if the file exists and write a header if needed
-      try:
-          with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
-              writer = csv.writer(log_file)
-              writer.writerow(["Global step", "GGN time B1", "Alpha step time", "Normal step time"
-                              ])  # Write header
-      except FileExistsError:
-          pass
-      
-      # Append the log data
       with open(log_file_path, 'a') as log_file:
           writer = csv.writer(log_file)
           writer.writerow(log_data)
@@ -924,7 +1070,7 @@ def get_batch_size(workload_name):
   elif workload_name == 'imagenet_resnet_gelu':
     return 512
   elif workload_name == 'imagenet_vit':
-    return int(1024/8 * 2 * N_GPUS)  # original batch size / 8 (original number of GPUs) * 2 (for two halves) * 2 (for two GPUs)
+    return 8 * 32               # int(1024/8 * 2 * N_GPUS)  # original batch size / 8 (original number of GPUs) * 2 (for two halves) * 2 (for two GPUs)
   elif workload_name == 'librispeech_conformer':
     return 256
   elif workload_name == 'librispeech_deepspeech':

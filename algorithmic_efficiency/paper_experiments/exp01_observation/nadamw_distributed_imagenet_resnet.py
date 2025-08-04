@@ -512,7 +512,7 @@ def update_params(workload: spec.Workload,
   current_model.eval()  # set to evaluation mode before GGN
   
 
-  GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2)
+  GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2, check_deterministic=False)  # GGN on each device
 
   # construct combined GGN
   GGN_b2_combined = DistributedGGN(GGN_b2, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction
