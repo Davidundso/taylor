@@ -23,6 +23,12 @@ import csv
 import time
 import gc
 
+# WMT-specific imports (for workload compatibility)
+try:
+    from torch.backends.cuda import sdp_kernel
+except ImportError:
+    sdp_kernel = None
+
 USE_PYTORCH_DDP, RANK, DEVICE, N_GPUS = pytorch_setup()
 # To change the lr schedule: (1) Change the learning rate appropriately to make it e.g. smaller
 # (2) then change the step hint: an e.g. 4x smaller lr means 4x more steps are needed
@@ -290,6 +296,27 @@ class DistributedGGN:
         return self.__matmul__(v)
 
 
+# WMT-specific classes (for workload compatibility)
+class WorkloadLossWrapper:
+    """Loss wrapper for GGNLinearOperator (for WMT workload)."""
+    def __init__(self, workload, label_smoothing=0.0, reduction='mean'):
+        self.workload = workload
+        self.label_smoothing = label_smoothing
+        self.reduction = reduction
+
+    def __call__(self, logits, y):
+        # For WMT, use the workload's loss function
+        loss_dict = self.workload.loss_fn(
+            label_batch=y,
+            logits_batch=logits,
+            label_smoothing=self.label_smoothing)
+        
+        if self.reduction == 'mean':
+            return loss_dict['summed'] / loss_dict['n_valid_examples']
+        else:
+            return loss_dict['summed']
+
+
 def update_params(workload: spec.Workload,
                   current_param_container: spec.ParameterContainer,
                   current_params_types: spec.ParameterTypeTree,
@@ -307,13 +334,14 @@ def update_params(workload: spec.Workload,
   del eval_results
   del hyperparameters
 
+  # ======================== WORKLOAD CONFIGURATION ========================
+  # Change this to select which workload to run: 'criteo1tb', 'imagenet_resnet', 'imagenet_vit', 'wmt'
+  workload_name = 'criteo1tb'  # set workload
+  
   num_consec_alphas = 50
   comp_alphas_each = 1000
   start_comp_alpha = 0            # earliest alpha computations: If set to zero alpha is computed for the first num_consec_alphas steps 
   timing = True                    # if timings should be printed
-  #workload_name = 'criteo1tb'      # enum: criteo1tb, imagenet_resnet, imagenet_vit
-  #workload_name = 'imagenet_resnet' 
-  workload_name = 'imagenet_vit' 
   use_median_alpha = False         # if True, use the median of the last num_consec_alphas alphas to set the learning rate
 
   # log: num of devices, batch size, learning rate, max number of steps, workload name
@@ -322,7 +350,7 @@ def update_params(workload: spec.Workload,
     logging.info('Per GPU batch size before halving: %d', batch['inputs'].size(0))
     logging.info('Batch size from batch size fn: %d', get_batch_size(workload_name))
     logging.info('Learning rate: %f', HPARAMS['learning_rate'])
-    logging.info('Max number of steps: %d', workload.step_hint * (8 / N_GPUS))
+    logging.info('Max number of steps: %d', workload.step_hint * (8 / N_GPUS))  # Adjusted for number of GPUs
     logging.info('Workload name: %s', workload_name)
     
 
@@ -343,11 +371,24 @@ def update_params(workload: spec.Workload,
     batch = {
         'inputs': batch['inputs'][:half_batch_size],
         'targets': batch['targets'][:half_batch_size],
-        
     }
+
     if batch.get('weights') is not None:
       batch['weights'] = batch['weights'][:half_batch_size]
 
+    if workload_name == 'wmt':
+      # Add all the WMT-specific batch keys
+      if batch.get('inputs_position') is not None:
+          batch['inputs_position'] = batch['inputs_position'][:half_batch_size]
+      if batch.get('targets_position') is not None:
+          batch['targets_position'] = batch['targets_position'][:half_batch_size]
+      if batch.get('inputs_segmentation') is not None:
+          batch['inputs_segmentation'] = batch['inputs_segmentation'][:half_batch_size]
+      if batch.get('targets_segmentation') is not None:
+          batch['targets_segmentation'] = batch['targets_segmentation'][:half_batch_size]
+      if batch.get('weights') is not None:
+        batch['weights'] = batch['weights'][:half_batch_size]
+       
 
     current_model = current_param_container
     current_model.train()
@@ -372,7 +413,7 @@ def update_params(workload: spec.Workload,
     loss_dict = workload.loss_fn(
         label_batch=batch['targets'],
         logits_batch=logits_batch,
-        # mask_batch=batch.get('weights'),
+        mask_batch=batch.get('weights'),
         label_smoothing=label_smoothing)
     summed_loss = loss_dict['summed']
     n_valid_examples = loss_dict['n_valid_examples']
@@ -388,7 +429,7 @@ def update_params(workload: spec.Workload,
       torch.nn.utils.clip_grad_norm_(
           current_model.parameters(), max_norm=grad_clip)
     optimizer_state['optimizer'].step()
-    if global_step < 2000 + num_consec_alphas:
+    if (global_step < 2000 + num_consec_alphas) or not use_median_alpha:
       optimizer_state['scheduler'].step()
 
     # Log training metrics - loss, grad_norm, batch_size.
@@ -414,11 +455,13 @@ def update_params(workload: spec.Workload,
     if RANK == 0:  # log only on rank 0
       if timing:
         if workload_name == 'criteo1tb':
-          log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_criteo")
+          log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_criteo_new")
         elif workload_name == 'imagenet_resnet':
-          log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_resnet")
+          log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_resnet_new")
         elif workload_name == 'imagenet_vit':
-          log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_vit")
+          log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_vit_new")
+        elif workload_name == 'wmt':
+          log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_wmt_new")
 
         # Ensure the directory exists
         os.makedirs(log_dir, exist_ok=True)
@@ -426,13 +469,15 @@ def update_params(workload: spec.Workload,
         # Construct the full path to the log file
         log_file_path = os.path.join(log_dir, 'timing_log.csv')
 
-        log_data = [global_step, "", "", time_normal_step]  # Empty strings for GGN and alpha step times
+        learning_rate = optimizer_state['optimizer'].param_groups[0]['lr']
+
+        log_data = [global_step, "", "", time_normal_step, learning_rate]  # Empty strings for GGN and alpha step times
 
         # Check if the file exists and write a header if needed
         try:
             with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
                 writer = csv.writer(log_file)
-                writer.writerow(["Global step", "GGN time B1", "Alpha step time", "Normal step time"
+                writer.writerow(["Global step", "GGN time B1", "Alpha step time", "Normal step time", "Learning rate"
                                 ])  # Write header
         except FileExistsError:
             pass
@@ -472,6 +517,36 @@ def update_params(workload: spec.Workload,
 
   inputs1, inputs2 = inputs[:half_batch_size], inputs[half_batch_size:]
   targets1, targets2 = targets[:half_batch_size], targets[half_batch_size:]
+  if weights is not None:
+      weights1, weights2 = weights[:half_batch_size], weights[half_batch_size:]
+
+  # Handle WMT-specific batch keys (only for WMT workload)
+  if workload_name == 'wmt':
+      if 'inputs_position' in batch and batch['inputs_position'] is not None:  # check if key exists and inside is not none
+          inputs_position1, inputs_position2 = batch['inputs_position'][:half_batch_size], batch['inputs_position'][half_batch_size:]
+      else:
+          inputs_position1, inputs_position2 = None, None
+
+      if 'targets_position' in batch and batch['targets_position'] is not None:
+          targets_position1, targets_position2 = batch['targets_position'][:half_batch_size], batch['targets_position'][half_batch_size:]
+      else:
+          targets_position1, targets_position2 = None, None
+
+      if 'inputs_segmentation' in batch and batch['inputs_segmentation'] is not None:
+          inputs_segmentation1, inputs_segmentation2 = batch['inputs_segmentation'][:half_batch_size], batch['inputs_segmentation'][half_batch_size:]
+      else:
+          inputs_segmentation1, inputs_segmentation2 = None, None
+
+      if 'targets_segmentation' in batch and batch['targets_segmentation'] is not None:
+          targets_segmentation1, targets_segmentation2 = batch['targets_segmentation'][:half_batch_size], batch['targets_segmentation'][half_batch_size:]
+      else:
+          targets_segmentation1, targets_segmentation2 = None, None
+  else:
+      # For non-WMT workloads, these are not needed
+      inputs_position1, inputs_position2 = None, None
+      targets_position1, targets_position2 = None, None
+      inputs_segmentation1, inputs_segmentation2 = None, None
+      targets_segmentation1, targets_segmentation2 = None, None
 
   if global_step == 0:
     print("Using device:", DEVICE)
@@ -479,17 +554,63 @@ def update_params(workload: spec.Workload,
   # First half
   optimizer_state['optimizer'].zero_grad()
 
+  # Prepare data for GGN based on workload type
   if workload_name == 'criteo1tb':
     Data_b1 = [(inputs1.to(DEVICE), targets1.view(-1,1).to(DEVICE))] # criteo needs the targets like this (due to custom forward function)
   
-  if workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
+  elif workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
     Data_b1 = [(inputs1.to(DEVICE), targets1.to(DEVICE))]
+
+  elif workload_name == 'wmt':
+    # For WMT, create batch dictionary with all required keys
+    X_b1 = {
+        'inputs': inputs1,
+        'targets': targets1,
+        'inputs_position': inputs_position1,
+        'targets_position': targets_position1,
+        'inputs_segmentation': inputs_segmentation1,
+        'targets_segmentation': targets_segmentation1,
+    }
+    y_b1 = targets1
+    Data_b1 = [(X_b1, y_b1)]
 
 
   if timing:
     start_ggn_b1 = time.time()
-  # GGN on each device
-  GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1, check_deterministic=False)  # GGN on each device
+  
+  # Create GGN based on workload type
+  if workload_name == 'wmt':
+    # WMT requires special GGN setup with model wrapper and loss wrapper
+    def ggn_model_func(X):
+        logits, _ = workload.model_fn(
+            params=current_model,
+            augmented_and_preprocessed_input_batch=X,
+            model_state=model_state,
+            mode=spec.ForwardPassMode.TRAIN,
+            rng=rng,
+            update_batch_norm=False)
+        return logits
+
+    def batch_size_fn(X):
+        return X['inputs'].shape[0]
+
+    label_smoothing = (
+        hyperparameters.label_smoothing if hasattr(hyperparameters, 'label_smoothing') else 0.0)
+    
+    loss_module = WorkloadLossWrapper(workload, label_smoothing=label_smoothing, reduction='mean')
+    
+    GGN_b1 = GGNLinearOperator(
+        model_func=ggn_model_func,
+        loss_func=loss_module,
+        params=params_list,
+        data=Data_b1,
+        check_deterministic=False,
+        batch_size_fn=batch_size_fn
+    )
+  else:
+    # Standard GGN creation for criteo1tb, imagenet_resnet, imagenet_vit
+    GGN_b1 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b1, check_deterministic=False)
+  
   # construct combined GGN
   GGN_b1_combined = DistributedGGN(GGN_b1, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction 
   # Data1 not used anymore, so we can delete it (saves memory)
@@ -506,13 +627,36 @@ def update_params(workload: spec.Workload,
   if workload_name == 'criteo1tb':
     Data_b2 = [(inputs2.to(DEVICE), targets2.view(-1,1).to(DEVICE))] 
 
-  if workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
+  elif workload_name == 'imagenet_resnet' or workload_name == 'imagenet_vit':
     Data_b2 = [(inputs2.to(DEVICE), targets2.to(DEVICE))]
+  
+  elif workload_name == 'wmt':
+    # For WMT, create batch dictionary for second half
+    X_b2 = {
+        'inputs': inputs2,
+        'targets': targets2,
+        'inputs_position': inputs_position2,
+        'targets_position': targets_position2,
+        'inputs_segmentation': inputs_segmentation2,
+        'targets_segmentation': targets_segmentation2,
+    }
+    y_b2 = targets2
+    Data_b2 = [(X_b2, y_b2)]
   
   current_model.eval()  # set to evaluation mode before GGN
   
-
-  GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2, check_deterministic=False)  # GGN on each device
+  # Create second GGN based on workload type
+  if workload_name == 'wmt':
+    GGN_b2 = GGNLinearOperator(
+        model_func=ggn_model_func,
+        loss_func=loss_module,
+        params=params_list,
+        data=Data_b2,
+        check_deterministic=False,
+        batch_size_fn=batch_size_fn
+    )
+  else:
+    GGN_b2 = GGNLinearOperator(current_model, loss_fn, params_list, Data_b2, check_deterministic=False)  # GGN on each device
 
   # construct combined GGN
   GGN_b2_combined = DistributedGGN(GGN_b2, reduction='mean', N_GPUS=N_GPUS)  # use mean reduction
@@ -523,9 +667,22 @@ def update_params(workload: spec.Workload,
 
   current_model.train()
 
+  # Create batch dictionary for model_fn based on workload type
+  if workload_name == 'wmt':
+    batch1 = {
+        'inputs': inputs1,
+        'targets': targets1,
+        'inputs_position': inputs_position1,
+        'targets_position': targets_position1,
+        'inputs_segmentation': inputs_segmentation1,
+        'targets_segmentation': targets_segmentation1,
+    }
+  else:
+    batch1 = {'inputs': inputs1, 'targets': targets1}
+
   logits_batch1, new_model_state1 = workload.model_fn(
       params=current_model,
-      augmented_and_preprocessed_input_batch={'inputs': inputs1, 'targets': targets1},
+      augmented_and_preprocessed_input_batch=batch1,
       model_state=model_state,
       mode=spec.ForwardPassMode.TRAIN,
       rng=rng,
@@ -539,7 +696,7 @@ def update_params(workload: spec.Workload,
   loss_dict1 = workload.loss_fn(
       label_batch=targets1,
       logits_batch=logits_batch1,
-      # mask_batch=weights1,
+      mask_batch=weights1,
       label_smoothing=label_smoothing)
   summed_loss1 = loss_dict1['summed']
   n_valid_examples1 = loss_dict1['n_valid_examples']
@@ -569,9 +726,22 @@ def update_params(workload: spec.Workload,
   # Second half
   optimizer_state['optimizer'].zero_grad()
   
+  # Create batch dictionary for second model_fn call based on workload type
+  if workload_name == 'wmt':
+    batch2 = {
+        'inputs': inputs2,
+        'targets': targets2,
+        'inputs_position': inputs_position2,
+        'targets_position': targets_position2,
+        'inputs_segmentation': inputs_segmentation2,
+        'targets_segmentation': targets_segmentation2,
+    }
+  else:
+    batch2 = {'inputs': inputs2, 'targets': targets2}
+  
   logits_batch2, new_model_state2 = workload.model_fn(
       params=current_model,
-      augmented_and_preprocessed_input_batch={'inputs': inputs2, 'targets': targets2},
+      augmented_and_preprocessed_input_batch=batch2,
       model_state=model_state,
       mode=spec.ForwardPassMode.TRAIN,
       rng=rng,
@@ -585,7 +755,7 @@ def update_params(workload: spec.Workload,
   loss_dict2 = workload.loss_fn(
       label_batch=targets2,
       logits_batch=logits_batch2,
-      # mask_batch=weights2, removed. cannot be passed to GGN
+      mask_batch=weights2, 
       label_smoothing=label_smoothing)
   summed_loss2 = loss_dict2['summed']
   n_valid_examples2 = loss_dict2['n_valid_examples']
@@ -657,11 +827,13 @@ def update_params(workload: spec.Workload,
     current_lr = optimizer_state['optimizer'].param_groups[0]['lr']
     # log the values of alpha_star1_unbiased, alpha_star2, alpha_star_b1, alpha_star_b2_biased into a csv file
     if workload_name == 'criteo1tb':
-      log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_criteo")
+      log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_criteo_new")
     elif workload_name == 'imagenet_resnet':
-      log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_resnet")
+      log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_resnet_new")
     elif workload_name == 'imagenet_vit':
-      log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_vit")
+      log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_imagenet_vit_new")
+    elif workload_name == 'wmt':
+      log_dir = os.path.expandvars("$WORK/paper_experiments/exp01_wmt_new")
 
     # Ensure the directory exists
     os.makedirs(log_dir, exist_ok=True)
@@ -703,6 +875,9 @@ def update_params(workload: spec.Workload,
                                 ])  # Write header              
         except FileExistsError:
             pass
+        with open(log_file_path, 'a') as log_file:
+            writer = csv.writer(log_file)
+            writer.writerow(log_data)
 
     # log the same values but each multiplied by the learning rate into a new file alpha_star_scaled_log.csv
 
@@ -823,14 +998,15 @@ def update_params(workload: spec.Workload,
 
       # Construct the full path to the log file
       log_file_path = os.path.join(log_dir, 'timing_log.csv')
+      learning_rate = optimizer_state['optimizer'].param_groups[0]['lr']
 
-      log_data = [global_step, time_ggn_b1, alpha_step_time, ""]
+      log_data = [global_step, time_ggn_b1, alpha_step_time, "", learning_rate]
 
       # Check if the file exists and write a header if needed
       try:
           with open(log_file_path, 'x') as log_file:  # Open in exclusive creation mode
               writer = csv.writer(log_file)
-              writer.writerow(["Global step", "GGN time B1", "Alpha step time", "Normal step time"
+              writer.writerow(["Global step", "GGN time B1", "Alpha step time", "Normal step time", "Learning rate"
                               ])  # Write header
       except FileExistsError:
           pass
@@ -895,14 +1071,14 @@ def get_batch_size(workload_name):
   elif workload_name == 'ogbg':
     return 512
   elif workload_name == 'wmt':
-    return 128
+    return int(128/8 * 2 * N_GPUS)
   elif workload_name == 'mnist':
     return 16*2                                     # double the batch size for the two halves
   else:
     raise ValueError(f'Unsupported workload name: {workload_name}.')
 
-def get_eval_batch_size(workload_name: str) -> int:
-    return 1024  # or dynamically compute based on workload or system
+#def get_eval_batch_size(workload_name: str) -> int:
+#    return 1024  # or dynamically compute based on workload or system
 
 
 
